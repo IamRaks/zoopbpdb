@@ -3,9 +3,9 @@
   "rdFolderName": "Retail Deposits",
   "fallback": true,
   "dataSource": "drive",
-  "gClientId": "178366782646-40pl0orkhucncr30it7qghih38ueqtvo.apps.googleusercontent.com",
-  "gBpFolderId": "1lK05u66sgpMsOvMZMZln7jQ6zgtF9JKV",
-  "gRdFolderId": "1gjWdizFlNKcNhxbn8-UWJljd6gsx-skS",
+  "gClientId": "__obf__eH5xen9/fnF7f31/ZH15OSV5JjsiITwqJyo7enkgPX44LiEgIXpxPCw4PT8mZyg5OTpnLiYmLiUsPDosOyomJz0sJz1nKiYk",
+  "gBpFolderId": "__obf__eCUCeXw8f386LjkEOgY/BBMEEyUnfiMYfzMuPQ9wAwIf",
+  "gRdFolderId": "__obf__eC4jHi0gMw8lBwIqByExKydxZBweAyUjLX8uOjFkOiIa",
   "activeZone": "ERNAKULAM",
   "displayUnit": "crores",
   "theme": "dark",
@@ -358,7 +358,7 @@
       }
     },
     "Retail_Deposits_PositionSummary": {
-      "enabled": true,
+      "enabled": false,
       "source": "rd",
       "columns": {
         "SBA COUNT": {
@@ -461,5 +461,5 @@
   ],
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
-  "_savedAt": "2026-05-22T10:58:36.900Z"
+  "_savedAt": "2026-05-22T12:51:42.975Z"
 }
