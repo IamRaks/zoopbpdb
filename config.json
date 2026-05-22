@@ -358,7 +358,7 @@
       }
     },
     "Retail_Deposits_PositionSummary": {
-      "enabled": false,
+      "enabled": true,
       "source": "rd",
       "columns": {
         "SBA COUNT": {
@@ -367,7 +367,7 @@
           "direction": "higher"
         },
         "SBA BALANCE": {
-          "enabled": true,
+          "enabled": false,
           "displayName": "",
           "direction": "higher"
         },
@@ -377,7 +377,7 @@
           "direction": "higher"
         },
         "CAA BALANCE": {
-          "enabled": true,
+          "enabled": false,
           "displayName": "CAA BALANCE",
           "direction": "higher"
         },
@@ -461,5 +461,5 @@
   ],
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
-  "_savedAt": "2026-05-22T10:57:42.935Z"
+  "_savedAt": "2026-05-22T10:58:12.089Z"
 }
