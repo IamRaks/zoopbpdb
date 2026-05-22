@@ -1,6 +1,12 @@
+[build]
+  publish = "."
+
+[[redirects]]
+  from = "/"
+  to = "/BP_Dashboard.html"
+  status = 200
+
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data: blob:; connect-src 'self' https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com; frame-ancestors 'none'"
-    X-Frame-Options = "DENY"
-    X-Content-Type-Options = "nosniff"
+    Content-Security-Policy = "default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data: blob:; connect-src 'self' https://accounts.google.com https://www.googleapis.com https://oauth2.googleapis.com https://cdnjs.cloudflare.com https://fonts.googleapis.com https://fonts.gstatic.com"
