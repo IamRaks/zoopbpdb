@@ -6,6 +6,13 @@
   "gClientId": "__obf__eH5xen9/fnF7f31/ZH15OSV5JjsiITwqJyo7enkgPX44LiEgIXpxPCw4PT8mZyg5OTpnLiYmLiUsPDosOyomJz0sJz1nKiYk",
   "gBpFolderId": "__obf__eCUCeXw8f386LjkEOgY/BBMEEyUnfiMYfzMuPQ9wAwIf",
   "gRdFolderId": "__obf__eC4jHi0gMw8lBwIqByExKydxZBweAyUjLX8uOjFkOiIa",
+  "adminPasswordHash": "3a87afdcae32a375c6b4416e5a356801fc6da87bab110c5760c045819cae93c1",
+  "adminEmail": "zoopekm.proposals@gmail.com",
+  "ejsServiceId": "service_8x5yn04",
+  "ejsTemplateId": "template_l8mbtk9",
+  "ejsPublicKey": "IaT9mZNSS_294Z_J6",
+  "adminResetToken": "",
+  "adminResetExpiry": 0,
   "activeZone": "ERNAKULAM",
   "displayUnit": "crores",
   "theme": "dark",
@@ -461,5 +468,5 @@
   ],
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
-  "_savedAt": "2026-05-22T12:53:38.766Z"
+  "_savedAt": "2026-05-25T04:58:21.324Z"
 }
