@@ -162,7 +162,7 @@
         },
         "Saving Deposits": {
           "enabled": true,
-          "displayName": "SAVING DEPOSITS ",
+          "displayName": "SAVING DEPOSITS",
           "direction": "higher"
         },
         "CASA": {
@@ -466,7 +466,12 @@
       ]
     }
   ],
+  "summaryFileIds": {
+    "meta": "1TDYodSOMLyeNSwfM9sjAJU_uQUM_Wyry",
+    "recent": "1cidZIeE0_HJLhNW8A5b6RZ534DCDYTlQ",
+    "history": "1_CRNJIkdK8EgeuF9lFYQXmMQU0OEtKcQ"
+  },
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
-  "_savedAt": "2026-05-28T09:44:19.350Z"
+  "_savedAt": "2026-05-28T19:41:20.645Z"
 }
