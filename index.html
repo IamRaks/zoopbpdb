@@ -1903,8 +1903,22 @@ const ChartStore = {
   buildChunks(zone, store, fileVersions) {
     const cutoff = this._cutoffDate();
     const allDates = Object.keys(store.dates).sort();
-    const recentDates = allDates.filter(d => d >= cutoff);
-    const historyDates = allDates.filter(d => d < cutoff);
+
+    // Period dates that must always be in RECENT regardless of age
+    // These are needed for the dashboard table (FY End, Month End, Qtr End, Prev Day)
+    const now = new Date();
+    const mustInclude = new Set([
+      DL.toYMD(DL.fyEnd(now)),         // FY End (31-Mar)
+      DL.toYMD(DL.monthEnd(now)),       // Previous month end
+      DL.toYMD(DL.qtrEnd(now)),         // Previous quarter end
+    ].filter(Boolean));
+
+    // Also include any dates stored in Dashboard.state.periodDates
+    const dpd = (typeof Dashboard !== 'undefined' && Dashboard.state?.periodDates) || {};
+    Object.values(dpd).filter(Boolean).forEach(d => mustInclude.add(d));
+
+    const recentDates  = allDates.filter(d => d >= cutoff || mustInclude.has(d));
+    const historyDates = allDates.filter(d => d < cutoff && !mustInclude.has(d));
 
     const pick = (dates) => {
       const obj = {};
@@ -1917,6 +1931,8 @@ const ChartStore = {
       zone,
       lastUpdated: new Date().toISOString(),
       fileVersions: fileVersions || {},
+      // Store which dates were pinned as period dates (for debugging)
+      pinnedDates: [...mustInclude].filter(d => allDates.includes(d)),
       chunks: {
         recent: { dateCount: recentDates.length, oldest: recentDates[0]||null, newest: recentDates[recentDates.length-1]||null },
         history: historyDates.length
@@ -1927,7 +1943,7 @@ const ChartStore = {
 
     return {
       meta,
-      recent: { _meta: { chunk:'recent', zone }, dates: pick(recentDates) },
+      recent:  { _meta: { chunk:'recent', zone }, dates: pick(recentDates) },
       history: historyDates.length
         ? { _meta: { chunk:'history', zone }, dates: pick(historyDates) }
         : null
