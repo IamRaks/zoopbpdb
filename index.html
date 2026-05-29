@@ -3946,13 +3946,22 @@ const DataIntegrity = {
       const localTs = await DB.get('config','summaryLastUpdated') || 0;
       const fileIds = Cfg.get('summaryFileIds') || {};
 
-      // Public fetch helper — no OAuth needed if file is publicly readable
+      // Public fetch helper — tries googleapis.com first (CORS-friendly), then drive.google.com
       const fetchPublic = async (fileId) => {
         if (!fileId) return null;
-        const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
-        const r = await fetch(url);
-        if (!r.ok) return null;
-        return r.json().catch(() => null);
+        const urls = [
+          `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+          `https://drive.google.com/uc?export=download&confirm=t&id=${fileId}`,
+        ];
+        for (const url of urls) {
+          try {
+            const r = await fetch(url);
+            if (!r.ok) continue;
+            const text = await r.text();
+            if (text.trim().startsWith('{')) return JSON.parse(text);
+          } catch(e) { continue; }
+        }
+        return null;
       };
 
       // Authenticated fetch helper — needs OAuth token
@@ -6293,30 +6302,76 @@ const App = {
 
     if (summaryIds.recent) {
       try {
-        // Use confirm=t to bypass Google's virus scan confirmation for larger files
-        const url = `https://drive.google.com/uc?export=download&confirm=t&id=${summaryIds.recent}`;
-        const r = await fetch(url);
-        if (r.ok) {
-          const text = await r.text();
-          // Validate it's actually JSON before parsing (not a Google login/confirm page)
-          if (text.trim().startsWith('{')) {
-            const chunk = JSON.parse(text);
-            if (chunk?.dates && Object.keys(chunk.dates).length > 0) {
-              await ChartStore.mergeChunk(zone, chunk);
-              summaryLoaded = true;
-              this.showLanding('Preparing dashboard...', 60);
-              // Download history in background
-              if (summaryIds.history) {
-                fetch(`https://drive.google.com/uc?export=download&confirm=t&id=${summaryIds.history}`)
-                  .then(r2 => r2.ok ? r2.text() : null)
-                  .then(t => {
-                    if (t?.trim().startsWith('{')) return ChartStore.mergeChunk(zone, JSON.parse(t));
-                  }).catch(() => {});
+        // Try multiple URL formats for public Drive files
+        // googleapis.com supports CORS properly for public files
+        const urls = [
+          `https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media`,
+          `https://drive.google.com/uc?export=download&confirm=t&id=${summaryIds.recent}`,
+        ];
+        let chunk = null;
+        for (const url of urls) {
+          try {
+            const r = await fetch(url);
+            if (!r.ok) continue;
+            const text = await r.text();
+            if (text.trim().startsWith('{')) {
+              chunk = JSON.parse(text);
+              break;
+            }
+          } catch(e) { continue; }
+        }
+        if (chunk?.dates && Object.keys(chunk.dates).length > 0) {
+          await ChartStore.mergeChunk(zone, chunk);
+          summaryLoaded = true;
+          this.showLanding('Preparing dashboard...', 60);
+          // Download history in background
+          if (summaryIds.history) {
+            const histUrls = [
+              `https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media`,
+              `https://drive.google.com/uc?export=download&confirm=t&id=${summaryIds.history}`,
+            ];
+            (async () => {
+              for (const url of histUrls) {
+                try {
+                  const r2 = await fetch(url);
+                  if (!r2.ok) continue;
+                  const t = await r2.text();
+                  if (t.trim().startsWith('{')) {
+                    await ChartStore.mergeChunk(zone, JSON.parse(t));
+                    DataIntegrity._refreshVisibleChart();
+                    break;
+                  }
+                } catch(e) { continue; }
+              }
+            })().catch(() => {});
+          }
+        }
+      } catch(e) { console.warn('Public summary fetch failed:', e.message); }
+    }
+
+    // Also try authenticated fetch if public fetch failed and token available
+    if (!summaryLoaded) {
+      try {
+        const now = Date.now();
+        const token = (GDrive.token && GDrive.tokenExpiry > now) ? GDrive.token : null;
+        if (token && summaryIds.recent) {
+          const r = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (r.ok) {
+            const text = await r.text();
+            if (text.trim().startsWith('{')) {
+              const chunk = JSON.parse(text);
+              if (chunk?.dates && Object.keys(chunk.dates).length > 0) {
+                await ChartStore.mergeChunk(zone, chunk);
+                summaryLoaded = true;
+                this.showLanding('Preparing dashboard...', 60);
               }
             }
           }
         }
-      } catch(e) { console.warn('Public summary fetch failed:', e.message); }
+      } catch(e) { console.warn('Auth summary fetch failed:', e.message); }
     }
 
     // ── Step 3: Try local IndexedDB cache (returning user) ────
