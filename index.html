@@ -986,14 +986,19 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
             <div class="sync-status-bar vis" id="uploadStatus" style="margin-top:8px;display:none"></div>
           </div>
 
-          <!-- Summary management -->
+          <!-- Summary management -->\
           <div style="border-top:1px solid var(--border);padding-top:16px;margin-bottom:18px">
             <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Chart Summary</div>
             <div id="summaryStatus" style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:11px;color:var(--text2);margin-bottom:10px">
               <span id="summaryInfo">Checking...</span>
             </div>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:8px;line-height:1.5">
+              <b style="color:var(--text2)">↻ Incremental Update</b> — detects new or modified files, rebuilds only changed dates. Use daily.<br>
+              <b style="color:var(--text2)">🔄 Force Rebuild</b> — wipes and rebuilds everything from scratch. Use only for first setup, data corruption, or after adding new parameters.
+            </div>
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn-p" id="forceRebuildBtn" onclick="DataIntegrity.forceRebuild(Cfg.get('activeZone'))" style="flex:1">🔄 Force Rebuild (Recovery)</button>
+              <button class="btn-p" id="incrementalUpdateBtn" onclick="DataIntegrity.incrementalUpdate(Cfg.get('activeZone'))" style="flex:1">↻ Incremental Update</button>
+              <button class="btn-s" id="forceRebuildBtn" onclick="DataIntegrity.forceRebuild(Cfg.get('activeZone'))" style="flex:1">🔄 Force Rebuild (Recovery)</button>
               <button class="btn-s" onclick="SummaryMgr.download()" style="flex:1">⬇ Sync to Device</button>
             </div>
             <div class="prog-wrap" id="rebuildProg" style="display:none;margin-top:10px">
@@ -5077,6 +5082,109 @@ const DataIntegrity = {
   },
 
   // Force full rebuild with detailed step-by-step interaction log
+  // ── Incremental Update — daily use, only rebuilds changed/new dates ──────
+  async incrementalUpdate(zone) {
+    if (!zone) { alert('No zone configured.'); return; }
+    const btn = document.getElementById('incrementalUpdateBtn');
+    const logBody = document.getElementById('rebuildLogBody');
+    const logWrap = document.getElementById('rebuildLog');
+    const logTime = document.getElementById('rebuildLogTime');
+    const info    = document.getElementById('summaryInfo');
+    const progEl  = document.getElementById('rebuildProg');
+    const fillEl  = document.getElementById('rebuildFill');
+    const lblEl   = document.getElementById('rebuildLbl');
+
+    if (btn) { btn.disabled = true; btn.textContent = '⟳ Updating...'; }
+    if (logWrap) { logWrap.style.display = 'block'; }
+    if (logBody) logBody.innerHTML = '';
+    if (logTime) logTime.textContent = new Date().toLocaleTimeString('en',{hour12:false});
+    if (progEl) { progEl.style.display = 'block'; if (fillEl) fillEl.style.width = '5%'; }
+
+    const log = (msg, status='INF') => {
+      const col = {OK:'var(--green)',ERR:'var(--red)',WARN:'var(--yellow)',RUN:'var(--blue)',INF:'var(--text3)'}[status]||'var(--text3)';
+      const badge = {OK:'✓',ERR:'✗',WARN:'⚠',RUN:'⋯',INF:'·'}[status]||'·';
+      const ts = new Date().toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const line = `<div style="padding:1px 0;border-bottom:1px solid var(--border2)">` +
+        `<span style="color:var(--text3);font-size:9px">[${ts}] </span>` +
+        `<span style="color:${col};font-weight:700">${badge} </span>` +
+        `<span style="color:var(--text2)">${msg}</span></div>`;
+      if (logBody) { logBody.innerHTML += line; logBody.scrollTop = logBody.scrollHeight; }
+      AppLog.add('App', msg, status);
+    };
+
+    try {
+      log('Starting Incremental Update — Zone: ' + zone, 'RUN');
+
+      // Step 1: Check OAuth token
+      const token = await GDrive.getToken(false).catch(() => null);
+      if (!token) { log('Not signed in to Google Drive — sign in first', 'ERR'); return; }
+      log('OAuth token valid', 'OK');
+      if (fillEl) fillEl.style.width = '15%';
+
+      // Step 2: Sync file index from Drive (detect new/modified/deleted files)
+      log('Syncing file index from Drive...', 'RUN');
+      await GDrive.syncNow();
+      log('File index synced', 'OK');
+      if (fillEl) fillEl.style.width = '30%';
+
+      // Step 3: Convert any new/stale XLSX files
+      log('Checking for unconverted files...', 'RUN');
+      const convResult = await XLSXConverter.ensureConverted();
+      if (convResult.converted > 0)
+        log(`${convResult.converted} new file(s) converted to Sheets format`, 'OK');
+      else
+        log('All files already in Sheets format', 'OK');
+      if (fillEl) fillEl.style.width = '45%';
+
+      // Step 4: Reset cooldown and run ensureChartData (detects changes, rebuilds only what changed)
+      this._lastCheck = 0;
+      this._sheetNameCache = null;
+      log('Detecting changes...', 'RUN');
+      if (fillEl) fillEl.style.width = '55%';
+
+      // Run the incremental detect+rebuild cycle
+      await this._downloadIfNewer(zone);
+      const { toRebuild, toDelete } = await this._detectChanges(zone);
+
+      if (toDelete.length) {
+        await this._processDeleted(zone, toDelete);
+        log(`Removed ${toDelete.length} deleted date(s)`, 'WARN');
+      }
+
+      if (!toRebuild.length) {
+        log('No changes detected — summary is up to date', 'OK');
+        if (fillEl) fillEl.style.width = '100%';
+        if (lblEl) lblEl.textContent = 'Up to date ✓';
+        if (info) await Admin.refreshSummaryStatus();
+        return;
+      }
+
+      log(`${toRebuild.length} date(s) need updating: ${toRebuild.map(r=>r.dateStr).join(', ')}`, 'WARN');
+      if (fillEl) fillEl.style.width = '60%';
+
+      // Step 5: Rebuild only the changed dates
+      await this._incrementalRebuild(zone, toRebuild);
+      log(`Updated ${toRebuild.length} date(s)`, 'OK');
+      if (fillEl) fillEl.style.width = '85%';
+
+      // Step 6: Push updated summary to Drive
+      log('Pushing summary to Drive...', 'RUN');
+      await this._pushIfPossible(zone);
+      log('Summary pushed to Drive and made public', 'OK');
+      if (fillEl) fillEl.style.width = '100%';
+      if (lblEl) lblEl.textContent = 'Update complete ✓';
+
+      log(`Incremental Update complete — ${toRebuild.length} date(s) updated`, 'OK');
+      if (info) await Admin.refreshSummaryStatus();
+
+    } catch(e) {
+      log(`Error: ${e.message}`, 'ERR');
+      AppLog.add('App', 'Incremental Update failed', 'ERR', e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Incremental Update'; }
+    }
+  },
+
   async forceRebuild(zone) {
     if (!zone) { alert('No zone configured.'); return; }
 
