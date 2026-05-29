@@ -1830,15 +1830,56 @@ const XLSXConverter = {
       if (toConvert.some(i => i.type === 'rd'))
         rdCacheFolderId = await this._getCacheFolderId(token, parentFolderId, 'rd');
 
-      let converted = 0, failed = 0;
+      // ── Batch pre-scan cache folders (2 Drive calls total, not 1 per file) ─
+      // Handles the case where IndexedDB was cleared but Drive already has the
+      // converted Sheets. Prevents 20 redundant convertFile checks on each rebuild.
+      const prescanFolder = async (cacheFolderId, type) => {
+        if (!cacheFolderId) return;
+        try {
+          const q = encodeURIComponent(
+            `'${cacheFolderId}' in parents and mimeType='${this.MIME_SHEET}' and trashed=false`
+          );
+          const r = await fetch(
+            `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=1000`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (!r.ok) return;
+          const d = await r.json();
+          const byName = {};
+          (d.files || []).forEach(f => { byName[f.name] = f.id; });
+          for (const item of toConvert) {
+            if (item.type !== type) continue;
+            const name = type === 'bp' ? item.entry.bpName : item.entry.rdName;
+            const existingId = byName[name];
+            if (!existingId) continue;
+            const updated = await DB.get('fileIndex', item.dk) || item.entry;
+            if (type === 'bp') { updated.bpSheetId = existingId; updated.bpConverted = true; }
+            else               { updated.rdSheetId = existingId; updated.rdConverted = true; }
+            await DB.set('fileIndex', item.dk, updated);
+          }
+        } catch(e) { /* non-fatal — fall through to per-file convert */ }
+      };
+      await prescanFolder(bpCacheFolderId, 'bp');
+      await prescanFolder(rdCacheFolderId, 'rd');
 
-      for (let i = 0; i < toConvert.length; i++) {
-        const { dk, type, entry } = toConvert[i];
+      // Re-read fileIndex; only convert files not found in the pre-scan
+      const stillToConvert = [];
+      for (const item of toConvert) {
+        const fresh = await DB.get('fileIndex', item.dk);
+        const done = item.type === 'bp' ? fresh?.bpConverted : fresh?.rdConverted;
+        if (!done) stillToConvert.push({ ...item, entry: fresh || item.entry });
+      }
+      // ── end pre-scan ──────────────────────────────────────────────────────
+
+      let converted = 0, skipped = toConvert.length - stillToConvert.length, failed = 0;
+
+      for (let i = 0; i < stillToConvert.length; i++) {
+        const { dk, type, entry } = stillToConvert[i];
         const xlsxId = type === 'bp' ? entry.bpXlsxId : entry.rdXlsxId;
         const name = type === 'bp' ? entry.bpName : entry.rdName;
         const cacheFolderId = type === 'bp' ? bpCacheFolderId : rdCacheFolderId;
         if (!cacheFolderId) { failed++; continue; }
-        if (onProgress) onProgress(i, toConvert.length, name);
+        if (onProgress) onProgress(i, stillToConvert.length, name);
 
         const sheetId = await this.convertFile(token, xlsxId, name, cacheFolderId);
         const updated = await DB.get('fileIndex', dk) || entry;
@@ -1856,11 +1897,11 @@ const XLSXConverter = {
           failed++;
         }
         // Small pause between conversions to avoid Drive API quota
-        if (i < toConvert.length - 1)
+        if (i < stillToConvert.length - 1)
           await new Promise(r => setTimeout(r, 500));
       }
 
-      return { converted, skipped: 0, failed };
+      return { converted, skipped, failed };
     } catch(e) {
       console.warn('XLSXConverter.ensureConverted error:', e.message);
       return { converted: 0, skipped: 0, failed: 0 };
@@ -4585,14 +4626,20 @@ const DataIntegrity = {
       });
       if (convResult.converted > 0) {
         log('', 'Drive API', 'XLSX conversion complete', 'OK',
-          `${convResult.converted} converted → BP_Sheets_Cache/ and RD_Sheets_Cache/`);
-        DataIntegrity._sheetNameCache = null;
-        allDates = await DB.keys('fileIndex');
+          `${convResult.converted} newly converted, ${convResult.skipped} already existed → BP_Sheets_Cache/ and RD_Sheets_Cache/`);
       } else if (convResult.failed > 0) {
         log('', 'Drive API', 'Some files could not be converted', 'ERR',
           `${convResult.failed} failed — check Drive permissions`);
+      } else if (convResult.skipped > 0) {
+        log('', 'Drive API', 'All files already in Sheets format — skipped', 'OK',
+          `${convResult.skipped} sheets reused from cache folders`);
       } else {
         log('', 'Drive API', 'All files already in Sheets format', 'OK');
+      }
+      // Invalidate sheet name cache if any sheets were found or converted
+      if (convResult.converted > 0 || convResult.skipped > 0) {
+        DataIntegrity._sheetNameCache = null;
+        allDates = await DB.keys('fileIndex');
       }
 
       // Log fileIndex state for each date — shows which dates have missing sheet IDs
