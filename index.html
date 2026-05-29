@@ -2945,8 +2945,8 @@ const DE = {
         const store = await ChartStore._getStore(zone);
         const datesToTry = [dateStr];
         if (fallback) {
-          const sorted = await ChartStore.getSortedDates(zone);
-          sorted.filter(d=>d<dateStr).slice(0,10).forEach(d=>datesToTry.push(d));
+          const sorted = await ChartStore.getSortedDates(zone); // ascending
+          sorted.filter(d=>d<dateStr).reverse().slice(0,10).forEach(d=>datesToTry.push(d));
         }
         for (const td of datesToTry) {
           const entry = store?.dates?.[td]?.[scopeKey];
@@ -3034,8 +3034,8 @@ const DE = {
       const store = await ChartStore._getStore(zone);
       const datesToTry = [dateStr];
       if (fallback) {
-        const sorted = await ChartStore.getSortedDates(zone);
-        sorted.filter(d=>d<dateStr).slice(0,10).forEach(d=>datesToTry.push(d));
+        const sorted = await ChartStore.getSortedDates(zone); // ascending
+        sorted.filter(d=>d<dateStr).reverse().slice(0,10).forEach(d=>datesToTry.push(d));
       }
       for (const td of datesToTry) {
         const entry = store?.dates?.[td];
@@ -3206,10 +3206,10 @@ const PeriodPicker = {
     this.closeAll();
 
     const allDates_local = await FM.availDates('bp');
-    // For new users (no local files), fall back to dates from chartData summary
+    // For new users (no local files), fall back to dates from chartData summary (descending)
     const allDates = allDates_local.length
       ? allDates_local
-      : await ChartStore.getSortedDates(Cfg.get('activeZone')||'');
+      : (await ChartStore.getSortedDates(Cfg.get('activeZone')||'')).reverse();
     const latestStr = Dashboard.state.periodDates['latest'];
     if (!latestStr) return;
 
@@ -3281,7 +3281,13 @@ const BranchCombo = {
     const dd = document.getElementById('branchComboDropdown');
     if (!dd) return;
     if (!list.length) {
-      dd.innerHTML = '<div class="combo-none">No branches found</div>';
+      // Check if user has OAuth (admin) — if not, explain why branches aren't available
+      const hasFiles = dd.closest ? true : false; // always true, just a hook
+      const isPublicUser = !GDrive.token;
+      const msg = isPublicUser
+        ? 'Branch data requires admin sign-in'
+        : 'No branches found';
+      dd.innerHTML = `<div class="combo-none">${msg}</div>`;
       return;
     }
     dd.innerHTML = list.map(b =>
@@ -3390,7 +3396,7 @@ const Dashboard = {
     if (!dates.length) {
       // Final fallback: derive dates from chartData summary (new users with no local files)
       const zone2 = Cfg.get('activeZone');
-      if (zone2) dates = await ChartStore.getSortedDates(zone2);
+      if (zone2) dates = (await ChartStore.getSortedDates(zone2)).reverse(); // descending — latest first
     }
     if (!dates.length) return;
     const holSats=Cfg.get('holidaySats')||[2,4];
@@ -3660,7 +3666,25 @@ const Dashboard = {
       const indexed=await DB.keys('fileIndex');
       dates=indexed.sort().reverse();
     }
-    if(!dates.length)return;
+
+    // ── chartData fallback for region list ────────────────────────────────
+    if (!dates.length) {
+      // Derive region list directly from chartData scope keys (new user / no OAuth)
+      const store = await ChartStore._getStore(zone);
+      const allScopeKeys = new Set();
+      Object.values(store.dates||{}).forEach(e => Object.keys(e).forEach(k => allScopeKeys.add(k)));
+      const regions = [...allScopeKeys]
+        .filter(k => k !== '__zone__')
+        .sort((a,b)=>{ if(a==='__ZO__')return -1; if(b==='__ZO__')return 1; return a.localeCompare(b); });
+      if (!regions.length) return;
+      const mkOpts2=(sel,extra)=>{ let h=extra; regions.forEach(r=>{ const lbl=r==='__ZO__'?'UNDER ZO':r; h+=`<option value="${r}">${lbl}</option>`; }); sel.innerHTML=h; };
+      mkOpts2(document.getElementById('regionSel'),'<option value="">— Select Region —</option>');
+      mkOpts2(document.getElementById('branchRegion'),'<option value="">All Regions</option>');
+      if(this.state.region)document.getElementById('regionSel').value=this.state.region;
+      return;
+    }
+    // ── end chartData fallback ─────────────────────────────────────────────
+
     // Try local bpFiles first, then Sheets API
     let fd=await DB.get('bpFiles',dates[0]);
     if(!fd){
