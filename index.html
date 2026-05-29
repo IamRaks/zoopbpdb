@@ -428,7 +428,11 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 .chart-legend{display:flex;gap:12px;padding:6px 16px 8px;flex-wrap:wrap;border-top:1px solid var(--border2)}
 .chart-live-status{font-size:9px;font-weight:600;padding:2px 7px;border-radius:10px;white-space:nowrap;margin-left:auto}
 .status-live{color:var(--green);background:rgba(63,185,80,.12)}
-.status-syncing{color:var(--accent);background:rgba(245,158,11,.12);animation:pulse 1.5s infinite}
+.act-chip{background:var(--bg3);border:1px solid var(--border);color:var(--text2);
+  border-radius:12px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:inherit;white-space:nowrap}
+.act-chip.active{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+.alog-ok{color:var(--green)}.alog-err{color:var(--red)}.alog-warn{color:var(--accent)}
+.alog-inf{color:var(--text3)}.alog-run{color:#79c0ff}
 .status-converting{color:#c678dd;background:rgba(198,120,221,.12);animation:pulse 1.2s infinite}
 .status-warn{color:var(--red);background:rgba(248,81,73,.12)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
@@ -540,6 +544,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <button class="tab-btn" data-tab="allregions">🗺 All Regions</button>
       <button class="tab-btn" data-tab="region">📍 Region</button>
       <button class="tab-btn" data-tab="branch">🏪 Branch</button>
+      <button class="tab-btn" data-tab="activity">📋 Activity</button>
     </div>
     <div class="tab-content">
       <div class="tab-panel active" id="tab-zone">
@@ -684,6 +689,32 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <div class="chart-legend" id="branchChartLegend"></div>
         </div>
       </div>
+
+      <!-- Activity Tab -->
+      <div class="tab-panel" id="tab-activity" style="padding:12px 8px">
+        <!-- Filter chips -->
+        <div id="actFilterBar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+          <button class="act-chip active" data-filter="all" onclick="AppLog.setFilter('all',this)">All</button>
+          <button class="act-chip" data-filter="App" onclick="AppLog.setFilter('App',this)">App</button>
+          <button class="act-chip" data-filter="OAuth" onclick="AppLog.setFilter('OAuth',this)">OAuth</button>
+          <button class="act-chip" data-filter="Drive API" onclick="AppLog.setFilter('Drive API',this)">Drive</button>
+          <button class="act-chip" data-filter="Sheets API" onclick="AppLog.setFilter('Sheets API',this)">Sheets</button>
+          <button class="act-chip" data-filter="GitHub" onclick="AppLog.setFilter('GitHub',this)">GitHub</button>
+          <button class="act-chip" data-filter="Summary" onclick="AppLog.setFilter('Summary',this)">Summary</button>
+          <button class="act-chip" data-filter="ERR" onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
+        </div>
+        <!-- Log entries -->
+        <div id="actLogWrap" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;max-height:calc(100vh - 220px);overflow-y:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.8">
+          <div id="actLogBody" style="padding:6px 10px"></div>
+        </div>
+        <!-- Actions -->
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.copyFiltered()">📋 Copy</button>
+          <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.clear()">🗑 Clear</button>
+        </div>
+        <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:6px" id="actCount"></div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -3583,6 +3614,7 @@ const Dashboard = {
     document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===key));
     document.querySelectorAll('.tab-panel').forEach(p=>p.classList.toggle('active',p.id===`tab-${key}`));
     if(key==='branch')this.refreshBranchCombo();
+    if(key==='activity')AppLog._renderAll();
   },
 
   setUnit(u){this.state.unit=u;Cfg.set('displayUnit',u);Cfg.save();this.updateUnitBtns();this.refreshAll();},
@@ -6210,6 +6242,119 @@ const Carousel = {
 };
 
 // ================================================================
+// APP LOG — real-time activity log visible in Activities tab
+// ================================================================
+const AppLog = {
+  _entries: [],
+  _MAX: 300,
+  _filter: 'all',
+
+  add(entity, action, status, detail) {
+    status = status || 'INF';
+    const entry = { ts: new Date(), entity, action, status, detail: detail || '' };
+    this._entries.push(entry);
+    if (this._entries.length > this._MAX) this._entries.shift();
+    this._renderEntry(entry);
+    this._updateCount();
+    DB.get('config','appLog').then(log => {
+      const arr = log || [];
+      arr.push({ ts: entry.ts.toISOString(), entity, action, status, detail: entry.detail });
+      if (arr.length > 500) arr.splice(0, arr.length - 500);
+      DB.set('config','appLog', arr);
+    }).catch(()=>{});
+  },
+
+  async loadPersisted() {
+    try {
+      const saved = await DB.get('config','appLog');
+      if (!saved?.length) return;
+      const parsed = saved.map(e => ({
+        ts: new Date(e.ts), entity: e.entity, action: e.action,
+        status: e.status, detail: e.detail || ''
+      }));
+      this._entries = [...parsed, ...this._entries].slice(-this._MAX);
+      this._renderAll();
+    } catch(e) {}
+  },
+
+  setFilter(filter, btn) {
+    this._filter = filter;
+    document.querySelectorAll('.act-chip').forEach(c => c.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    this._renderAll();
+  },
+
+  _filteredEntries() {
+    if (this._filter === 'all') return this._entries;
+    if (this._filter === 'ERR') return this._entries.filter(e => e.status === 'ERR');
+    return this._entries.filter(e => e.entity === this._filter);
+  },
+
+  _entryHTML(e) {
+    const cls = {OK:'alog-ok',ERR:'alog-err',WARN:'alog-warn',RUN:'alog-run',INF:'alog-inf'}[e.status]||'alog-inf';
+    const badge = {OK:'✓',ERR:'✗',WARN:'⚠',RUN:'⟳',INF:'·'}[e.status]||'·';
+    const ts = e.ts.toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const date = e.ts.toLocaleDateString('en',{day:'2-digit',month:'short'});
+    return `<div style="padding:2px 0;border-bottom:1px solid var(--border2)">
+      <span style="color:var(--text3);font-size:9px">${date} ${ts} </span>
+      <span class="${cls}" style="font-weight:700">${badge} </span>
+      <span style="color:var(--accent)">${e.entity}</span>
+      <span style="color:var(--text2)"> › ${e.action}</span>
+      ${e.detail?`<div style="padding-left:14px;color:var(--text3);font-size:10px">${e.detail}</div>`:''}
+    </div>`;
+  },
+
+  _renderEntry(entry) {
+    const body = document.getElementById('actLogBody');
+    if (!body) return;
+    const matches = this._filter === 'all'
+      || (this._filter === 'ERR' && entry.status === 'ERR')
+      || entry.entity === this._filter;
+    if (!matches) return;
+    body.insertAdjacentHTML('beforeend', this._entryHTML(entry));
+    const wrap = document.getElementById('actLogWrap');
+    if (wrap) wrap.scrollTop = wrap.scrollHeight;
+  },
+
+  _renderAll() {
+    const body = document.getElementById('actLogBody');
+    if (!body) return;
+    body.innerHTML = this._filteredEntries().map(e => this._entryHTML(e)).join('');
+    const wrap = document.getElementById('actLogWrap');
+    if (wrap) wrap.scrollTop = wrap.scrollHeight;
+    this._updateCount();
+  },
+
+  _updateCount() {
+    const el = document.getElementById('actCount');
+    if (!el) return;
+    const errs = this._entries.filter(e => e.status === 'ERR').length;
+    el.textContent = `${this._filteredEntries().length} shown · ${this._entries.length} total` +
+      (errs > 0 ? ` · ${errs} error${errs>1?'s':''}` : '');
+    el.style.color = errs > 0 ? 'var(--red)' : 'var(--text3)';
+  },
+
+  copyFiltered() {
+    const text = this._filteredEntries().map(e => {
+      const ts = e.ts.toLocaleTimeString('en',{hour12:false});
+      const date = e.ts.toLocaleDateString('en',{day:'2-digit',month:'short'});
+      return `[${date} ${ts}] ${e.status} ${e.entity} › ${e.action}${e.detail?' — '+e.detail:''}`;
+    }).join('\n');
+    navigator.clipboard.writeText(text)
+      .then(()=>alert('Copied!'))
+      .catch(()=>prompt('Copy log:',text));
+  },
+
+  clear() {
+    this._entries = [];
+    const body = document.getElementById('actLogBody');
+    if (body) body.innerHTML = '';
+    this._updateCount();
+    DB.set('config','appLog',[]).catch(()=>{});
+  }
+};
+
+// ================================================================
 // APP
 // ================================================================
 const App = {
@@ -6249,10 +6394,17 @@ const App = {
 
   async init(){
     await DB.open(); await Cfg.load();
+    await AppLog.loadPersisted();
+    AppLog.add('App', 'Starting up', 'RUN', navigator.userAgent.substring(0,60));
 
-    // Step 1: Load config from GitHub (public repo — no auth needed)
+    AppLog.add('GitHub', 'Loading config.json', 'RUN');
     const cfgUpdated = await ConfigSync.autoLoad();
-    if (cfgUpdated) await Cfg.load();
+    if (cfgUpdated) {
+      await Cfg.load();
+      AppLog.add('GitHub', 'Config loaded and applied', 'OK');
+    } else {
+      AppLog.add('GitHub', 'Config up to date (no change)', 'INF');
+    }
 
     // Handle password reset link
     const urlParams = new URLSearchParams(window.location.search);
@@ -6299,8 +6451,11 @@ const App = {
     this.showLanding('Loading dashboard data...', 20);
     const summaryIds = Cfg.get('summaryFileIds') || {};
     let summaryLoaded = false;
+    AppLog.add('Summary', 'Checking summaryFileIds in config', summaryIds.recent ? 'OK' : 'WARN',
+      summaryIds.recent ? 'IDs found — attempting public download' : 'No summaryFileIds in config — summary never built or config not synced');
 
     if (summaryIds.recent) {
+      AppLog.add('Summary', 'Fetching BP_SUMMARY_RECENT.json publicly', 'RUN', summaryIds.recent);
       try {
         // Try multiple URL formats for public Drive files
         // googleapis.com supports CORS properly for public files
@@ -6311,18 +6466,27 @@ const App = {
         let chunk = null;
         for (const url of urls) {
           try {
+            AppLog.add('Summary', 'Trying URL', 'RUN', url.substring(0,60)+'...');
             const r = await fetch(url);
+            AppLog.add('Summary', 'HTTP response', r.ok ? 'OK' : 'WARN', 'Status: ' + r.status + ' URL: ' + url.substring(0,50));
             if (!r.ok) continue;
             const text = await r.text();
             if (text.trim().startsWith('{')) {
               chunk = JSON.parse(text);
+              AppLog.add('Summary', 'JSON parsed successfully', 'OK', 'Dates: ' + Object.keys(chunk.dates||{}).length);
               break;
+            } else {
+              AppLog.add('Summary', 'Response is not JSON (HTML redirect/login page)', 'WARN', text.substring(0,80));
             }
-          } catch(e) { continue; }
+          } catch(e) {
+            AppLog.add('Summary', 'Fetch error', 'ERR', e.message);
+            continue;
+          }
         }
         if (chunk?.dates && Object.keys(chunk.dates).length > 0) {
           await ChartStore.mergeChunk(zone, chunk);
           summaryLoaded = true;
+          AppLog.add('Summary', 'Merged into IndexedDB', 'OK', Object.keys(chunk.dates).length + ' dates');
           this.showLanding('Preparing dashboard...', 60);
           // Download history in background
           if (summaryIds.history) {
@@ -6346,11 +6510,12 @@ const App = {
             })().catch(() => {});
           }
         }
-      } catch(e) { console.warn('Public summary fetch failed:', e.message); }
+      } catch(e) { AppLog.add('Summary', 'Public fetch exception', 'ERR', e.message); }
     }
 
     // Also try authenticated fetch if public fetch failed and token available
     if (!summaryLoaded) {
+      AppLog.add('Summary', 'Public fetch failed — trying authenticated fetch', 'WARN');
       try {
         const now = Date.now();
         const token = (GDrive.token && GDrive.tokenExpiry > now) ? GDrive.token : null;
@@ -6379,7 +6544,10 @@ const App = {
       const store = await ChartStore._getStore(zone);
       if (store?.dates && Object.keys(store.dates).length > 0) {
         summaryLoaded = true;
+        AppLog.add('App', 'Using local IndexedDB cache', 'OK', Object.keys(store.dates).length + ' dates cached');
         this.showLanding('Loading from cache...', 60);
+      } else {
+        AppLog.add('App', 'IndexedDB cache empty', 'WARN');
       }
     }
 
@@ -6388,12 +6556,17 @@ const App = {
       const dates = await FM.availDates('bp');
       if (dates.length) {
         summaryLoaded = true;
+        AppLog.add('App', 'Using local bpFiles cache', 'OK', dates.length + ' files');
         this.showLanding('Loading from local files...', 60);
+      } else {
+        AppLog.add('App', 'No local bpFiles either', 'WARN');
       }
     }
 
     // ── Step 5: No data available ─────────────────────────────
     if (!summaryLoaded) {
+      AppLog.add('App', 'No data available — showing setup prompt', 'ERR',
+        'summaryIds.recent=' + (summaryIds.recent||'null'));
       const lp = document.getElementById('landingPage');
       if (lp) lp.style.display = 'none';
       const np = document.getElementById('noSummaryPrompt');
@@ -6426,19 +6599,12 @@ const App = {
 
   // Background sync — only runs if valid OAuth token exists
   // Regular users: silently skipped. Admin device: syncs Drive + updates summary.
-  _backgroundSyncRunning: false,
-
   async _backgroundSync(zone) {
-    if (this._backgroundSyncRunning) return; // prevent overlapping calls
+    if (this._backgroundSyncRunning) return;
     this._backgroundSyncRunning = true;
     try {
-      // Check cached token WITHOUT calling GIS (no iframe, no flicker)
-      // GDrive.token is set if we have a valid in-memory token
-      // GDrive.tokenExpiry tells us if it's still valid
       const now = Date.now();
       let token = (GDrive.token && GDrive.tokenExpiry > now) ? GDrive.token : null;
-
-      // If no in-memory token, check IndexedDB cache
       if (!token) {
         const cached = await DB.get('config', 'gdriveToken').catch(() => null);
         if (cached?.token && cached?.expiry > now) {
@@ -6447,24 +6613,30 @@ const App = {
           GDrive.tokenExpiry = cached.expiry;
         }
       }
-
-      if (!token) return; // no valid token — skip silently, no GIS call
-
-      // Token valid — run sync pipeline
-      await GDrive.syncNow(); // uses existing token, no new auth prompt
-      // Wait for any pending XLSX conversion
+      if (!token) {
+        AppLog.add('OAuth', 'No valid cached token — background sync skipped', 'INF',
+          'User will see public summary only');
+        return;
+      }
+      AppLog.add('OAuth', 'Valid cached token found — running background sync', 'OK');
+      await GDrive.syncNow();
+      AppLog.add('Drive API', 'syncNow complete', 'OK');
       let waitCount = 0;
       while (XLSXConverter._converting && waitCount < 30) {
         await new Promise(r => setTimeout(r, 1000));
         waitCount++;
       }
-      if (zone) await DataIntegrity.ensureChartData(zone).catch(() => {});
-
-      // If noSummaryPrompt was showing, check if we now have data
+      if (zone) {
+        AppLog.add('App', 'Running DataIntegrity.ensureChartData', 'RUN');
+        await DataIntegrity.ensureChartData(zone).catch(e => {
+          AppLog.add('App', 'ensureChartData error', 'ERR', e.message);
+        });
+      }
       const np = document.getElementById('noSummaryPrompt');
       if (np && np.style.display !== 'none') {
         const store = await ChartStore._getStore(zone);
         if (store?.dates && Object.keys(store.dates).length > 0) {
+          AppLog.add('App', 'Data now available — loading dashboard', 'OK');
           np.style.display = 'none';
           const dw = document.getElementById('dashWrap');
           if (dw && dw.style.display === 'none') {
@@ -6473,7 +6645,10 @@ const App = {
           }
         }
       }
-    } catch(e) { console.warn('Background sync error:', e.message); }
+    } catch(e) {
+      AppLog.add('App', 'Background sync error', 'ERR', e.message);
+      console.warn('Background sync error:', e.message);
+    }
     finally { this._backgroundSyncRunning = false; }
   },
   // ── Password auth helpers ─────────────────────────────────
