@@ -1727,8 +1727,12 @@ const ConfigSync = {
 
       if (resp.ok) {
         setBar('✓ Config pushed to GitHub. All devices will load updated settings within 30 seconds.');
+        if (bar) bar.style.color = '';
+        // Clear red border on PAT field if it was showing missing warning
+        const pEl = document.getElementById('ghPat');
+        if (pEl) { pEl.style.borderColor = ''; pEl.title = 'PAT saved'; }
         await DB.set('config', 'lastConfigPush', new Date().toISOString());
-        if (!silent) AppLog.add('GitHub', 'Config pushed — summaryFileIds saved', 'OK',
+        AppLog.add('GitHub', 'Config pushed — PAT and summaryFileIds saved', 'OK',
           `summaryFileIds.recent=${(Cfg.get('summaryFileIds')||{}).recent?.substring(0,12)||'null'}`);
         return true;
       } else {
@@ -1823,9 +1827,25 @@ const ConfigSync = {
     const u = document.getElementById('ghUsername');
     const r = document.getElementById('ghRepo');
     const p = document.getElementById('ghPat');
+    const bar = document.getElementById('cfgSyncBar');
     if (u) u.value = Cfg.get('ghUsername') || '';
     if (r) r.value = Cfg.get('ghRepo') || '';
-    if (p) p.value = pat ? '••••••••••••' : '';
+    if (p) {
+      if (pat) {
+        p.value = '••••••••••••';
+        p.style.borderColor = '';
+        p.title = 'PAT loaded from storage';
+      } else {
+        p.value = '';
+        p.style.borderColor = 'var(--red)';
+        p.title = 'PAT missing — enter your GitHub Personal Access Token';
+        if (bar) {
+          bar.classList.add('vis');
+          bar.style.color = 'var(--red)';
+          bar.textContent = '⚠ GitHub PAT missing — enter PAT below and click Push Config before rebuilding.';
+        }
+      }
+    }
   }
 };
 
@@ -4926,6 +4946,24 @@ const DataIntegrity = {
       log('', 'App', 'Starting Force Rebuild', 'RUN', `Zone: ${zone}`);
       setProgress(5, 'Starting...');
 
+      // ── Step 0: Check GitHub PAT is available ─────────────────
+      const pat = await ConfigSync.getPat();
+      if (!pat) {
+        log('', 'GitHub', 'PAT missing', 'ERR',
+          'GitHub Personal Access Token not found — enter PAT in Data Source settings and click Push Config first');
+        const bar = document.getElementById('cfgSyncBar');
+        if (bar) {
+          bar.classList.add('vis');
+          bar.style.color = 'var(--red)';
+          bar.textContent = '⚠ GitHub PAT missing — enter your PAT below and click Push Config, then retry Force Rebuild.';
+        }
+        // Switch admin panel to Data Source tab so admin can see the PAT field
+        Admin.showSec('datasource');
+        await finish(false, '⚠ GitHub PAT missing. Enter PAT in Data Source and Push Config first.');
+        return;
+      }
+      log('', 'GitHub', 'PAT available', 'OK');
+
       // ── Step 1: Check OAuth token ─────────────────────────────
       log('', 'Google OAuth', 'Checking authentication token', 'WAIT');
       const token = await GDrive.getToken(false).catch(() => null);
@@ -5340,7 +5378,7 @@ const Admin = {
   },
   loadUI(){this.loadDSUI();this.loadZoneUI();this.loadPeriodsUI();this.loadHolidaysUI();this.loadSheetsUI();this.loadDerivedUI();this.loadParamOrderUI();this.loadSecurityUI();},
 
-  loadDSUI(){
+  async loadDSUI(){
     const src=Cfg.get('dataSource')||'drive';
     this.setSource(src,true); // true=silent (no save)
     const bn=Cfg.get('bpFolderName'),rn=Cfg.get('rdFolderName');
@@ -5348,7 +5386,7 @@ const Admin = {
     if(rn){const el=document.getElementById('rdFolderRow');if(el){el.style.display='flex';document.getElementById('rdFolderName').textContent=rn;}}
     document.getElementById('fallbackChk').checked=!!Cfg.get('fallback');
     GDrive.loadUI();
-    ConfigSync.loadUI();
+    await ConfigSync.loadUI(); // await so PAT field and warning populate correctly
     this.refreshFileList('bp');this.refreshFileList('rd');
   },
 
