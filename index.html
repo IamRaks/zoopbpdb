@@ -1131,11 +1131,40 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 // APILOG — global fetch interceptor + admin log persistence
 // ================================================================
 const APILog = {
-  _session: new Date().toISOString().replace('T',' ').substring(0,19),
-  _sessionId: Date.now(),
+  _session: '',      // set by startNewSession() on first admin open
+  _sessionId: 0,
   _entries: [],          // current session entries
   _flushTimer: null,
   _MAX_MEM: 1000,
+
+  // Local date string YYYY-MM-DD using device timezone (not UTC)
+  _localDateStr(d) {
+    const dt = d || new Date();
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth()+1).padStart(2,'0');
+    const day = String(dt.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  },
+
+  // Local datetime string YYYY-MM-DD HH:MM:SS using device timezone
+  _localDateTimeStr(d) {
+    const dt = d || new Date();
+    const date = this._localDateStr(dt);
+    const hh = String(dt.getHours()).padStart(2,'0');
+    const mm = String(dt.getMinutes()).padStart(2,'0');
+    const ss = String(dt.getSeconds()).padStart(2,'0');
+    return `${date} ${hh}:${mm}:${ss}`;
+  },
+
+  // Start a new admin session — called when Admin panel opens
+  // Each admin panel open = a new session with its own ID and timestamp
+  startNewSession() {
+    this._session = this._localDateTimeStr();
+    this._sessionId = Date.now();
+    // Don't clear _entries — they belong to the page load session
+    // New session entries are appended to the shared _entries array
+    // but stored under a new sessionId key in IDB
+  },
 
   // Entity detection from URL
   _entity(url) {
@@ -1233,14 +1262,16 @@ const APILog = {
 
   async _flushToIDB() {
     if (!this._entries.length) return;
+    if (!this._session) return; // no admin session started yet
     try {
-      const dateKey = `adminlog:${this._session.substring(0,10)}`;
+      const dateKey = `adminlog:${this._localDateStr()}`; // local device date, not UTC
       const existing = await DB.get('config', dateKey) || { dates: {} };
       const sid = this._sessionId;
       if (!existing.dates[sid]) existing.dates[sid] = { session: this._session, entries: [] };
-      // Append only new entries (avoid duplicates on multiple flushes)
+      // Only append entries belonging to this session
       const stored = existing.dates[sid].entries;
-      const newEntries = this._entries.slice(stored.length);
+      const sessionEntries = this._entries.filter(e => e.sessionId === sid);
+      const newEntries = sessionEntries.slice(stored.length);
       newEntries.forEach(e => stored.push({
         ts: e.ts.toISOString(), entity: e.entity, label: e.label,
         status: e.status, ok: e.ok, durationMs: e.durationMs,
@@ -1256,7 +1287,7 @@ const APILog = {
       await this._flushToIDB(); // ensure latest entries are in IDB first
       const token = GDrive.token;
       if (!token) return;
-      const dateStr = this._session.substring(0, 10);
+      const dateStr = this._localDateStr(); // local device date, not UTC
       const dateKey = `adminlog:${dateStr}`;
       const logData = await DB.get('config', dateKey);
       if (!logData) return;
@@ -2218,13 +2249,36 @@ const XLSXConverter = {
       // Find all fileIndex entries that have XLSX files needing conversion
       const allDates = await DB.keys('fileIndex');
       const toConvert = [];
+      const staleFiles = [], freshFiles = [];
       for (const dk of allDates) {
         const entry = await DB.get('fileIndex', dk);
         if (!entry) continue;
-        if (entry.bpXlsxId && !entry.bpConverted && entry.bpMimeType === this.MIME_XLSX)
-          toConvert.push({ dk, type: 'bp', entry });
-        if (entry.rdXlsxId && !entry.rdConverted && entry.rdMimeType === this.MIME_XLSX)
-          toConvert.push({ dk, type: 'rd', entry });
+        if (entry.bpXlsxId && !entry.bpConverted && entry.bpMimeType === this.MIME_XLSX) {
+          const reason = entry.bpStale ? 'stale' : 'not_converted';
+          toConvert.push({ dk, type: 'bp', entry, reason });
+          if (entry.bpStale) staleFiles.push(`BP_${dk}`);
+          else freshFiles.push(`BP_${dk}`);
+        }
+        if (entry.rdXlsxId && !entry.rdConverted && entry.rdMimeType === this.MIME_XLSX) {
+          const reason = entry.rdStale ? 'stale' : 'not_converted';
+          toConvert.push({ dk, type: 'rd', entry, reason });
+          if (entry.rdStale) staleFiles.push(`RD_${dk}`);
+          else freshFiles.push(`RD_${dk}`);
+        }
+      }
+
+      // Log the fileIndex state summary to Admin log
+      const totalDates = allDates.length;
+      if (!toConvert.length) {
+        AppLog.add('Drive API', 'FileIndex check — all sheets current', 'OK',
+          `${totalDates} dates checked — bpConverted=true, rdConverted=true on all`);
+      } else {
+        if (freshFiles.length)
+          AppLog.add('Drive API', `FileIndex — ${freshFiles.length} sheet(s) not yet converted`, 'WARN',
+            freshFiles.join(', '));
+        if (staleFiles.length)
+          AppLog.add('Drive API', `FileIndex — ${staleFiles.length} sheet(s) stale (source XLSX modified)`, 'WARN',
+            staleFiles.join(', '));
       }
 
       if (!toConvert.length) return { converted: 0, skipped: 0, failed: 0 };
@@ -2244,22 +2298,32 @@ const XLSXConverter = {
       let converted = 0, skipped = 0, failed = 0;
 
       for (let i = 0; i < toConvert.length; i++) {
-        const { dk, type, entry } = toConvert[i];
+        const { dk, type, entry, reason } = toConvert[i];
         const xlsxId = type === 'bp' ? entry.bpXlsxId : entry.rdXlsxId;
         const name   = type === 'bp' ? entry.bpName   : entry.rdName;
         const cacheFolderId = type === 'bp' ? bpCacheFolderId : rdCacheFolderId;
-        if (!cacheFolderId) { failed++; continue; }
+        if (!cacheFolderId) {
+          AppLog.add('Drive API', `Convert skipped — no cache folder`, 'ERR', `${name} (${reason})`);
+          failed++; continue;
+        }
         if (onProgress) onProgress(i, toConvert.length, name);
+        AppLog.add('Drive API',
+          reason === 'stale' ? `Reconverting (source modified) — ${name}` : `Converting (new) — ${name}`,
+          'RUN', `date=${dk} type=${type.toUpperCase()}`);
 
         const sheetId = await this.convertFile(token, xlsxId, name, cacheFolderId);
         const updated = await DB.get('fileIndex', dk) || entry;
         if (sheetId) {
           const alreadyHadIt = type === 'bp' ? !!entry.bpSheetId : !!entry.rdSheetId;
-          if (type === 'bp') { updated.bpSheetId = sheetId; updated.bpConverted = true; }
-          else               { updated.rdSheetId = sheetId; updated.rdConverted = true; }
+          if (type === 'bp') { updated.bpSheetId = sheetId; updated.bpConverted = true; updated.bpStale = false; }
+          else               { updated.rdSheetId = sheetId; updated.rdConverted = true; updated.rdStale = false; }
           await DB.set('fileIndex', dk, updated);
+          AppLog.add('Drive API',
+            alreadyHadIt ? `Reconversion complete — ${name}` : `Conversion complete — ${name}`,
+            'OK', `sheetId=${sheetId.substring(0,12)}`);
           if (alreadyHadIt) skipped++; else converted++;
         } else {
+          AppLog.add('Drive API', `Conversion failed — ${name}`, 'ERR', `xlsxId=${xlsxId.substring(0,12)}`);
           failed++;
         }
         // Small pause between conversions to avoid Drive API quota
@@ -2680,13 +2744,20 @@ const GDrive = {
         const isXlsx = f.mimeType === XLSXConverter.MIME_XLSX;
         const isSheet = f.mimeType === XLSXConverter.MIME_SHEET;
         const xlsxChanged = isXlsx && ex.bpXlsxId && ex.bpXlsxId !== f.id;
+        const versionChanged = isXlsx && ex.bpVersion && ex.bpVersion !== newVersion;
+        if (versionChanged)
+          AppLog.add('Drive API', `BP modified — ${f.name}`, 'WARN',
+            `prev=${ex.bpModifiedTime||ex.bpVersion} new=${f.modifiedTime||newVersion} — sheet will be reconverted`);
+        if (xlsxChanged)
+          AppLog.add('Drive API', `BP file ID changed — ${f.name}`, 'WARN',
+            `prev=${(ex.bpXlsxId||'').substring(0,12)} new=${f.id.substring(0,12)} — reconverting`);
         await DB.set('fileIndex',dk,{...ex,
           bpXlsxId: isXlsx ? f.id : (ex.bpXlsxId || null),
           bpSheetId: isSheet ? f.id : (ex.bpSheetId || null),
           bpName:f.name, bpMimeType:f.mimeType||'',
           bpVersion:newVersion, bpModifiedTime:f.modifiedTime||'',
-          bpStale: ex.bpVersion && ex.bpVersion !== newVersion,
-          bpConverted: isSheet ? true : (xlsxChanged ? false : ex.bpConverted)
+          bpStale: versionChanged,
+          bpConverted: isSheet ? true : (xlsxChanged || versionChanged ? false : ex.bpConverted)
         });
       }
       for(const f of rdFiles){
@@ -2698,13 +2769,20 @@ const GDrive = {
         const isXlsx = f.mimeType === XLSXConverter.MIME_XLSX;
         const isSheet = f.mimeType === XLSXConverter.MIME_SHEET;
         const xlsxChanged = isXlsx && ex.rdXlsxId && ex.rdXlsxId !== f.id;
+        const versionChanged = isXlsx && ex.rdVersion && ex.rdVersion !== newVersion;
+        if (versionChanged)
+          AppLog.add('Drive API', `RD modified — ${f.name}`, 'WARN',
+            `prev=${ex.rdModifiedTime||ex.rdVersion} new=${f.modifiedTime||newVersion} — sheet will be reconverted`);
+        if (xlsxChanged)
+          AppLog.add('Drive API', `RD file ID changed — ${f.name}`, 'WARN',
+            `prev=${(ex.rdXlsxId||'').substring(0,12)} new=${f.id.substring(0,12)} — reconverting`);
         await DB.set('fileIndex',dk,{...ex,
           rdXlsxId: isXlsx ? f.id : (ex.rdXlsxId || null),
           rdSheetId: isSheet ? f.id : (ex.rdSheetId || null),
           rdName:f.name, rdMimeType:f.mimeType||'',
           rdVersion:newVersion, rdModifiedTime:f.modifiedTime||'',
-          rdStale: ex.rdVersion && ex.rdVersion !== newVersion,
-          rdConverted: isSheet ? true : (xlsxChanged ? false : ex.rdConverted)
+          rdStale: versionChanged,
+          rdConverted: isSheet ? true : (xlsxChanged || versionChanged ? false : ex.rdConverted)
         });
       }
 
@@ -4741,6 +4819,32 @@ const DataIntegrity = {
         return b.dateStr.localeCompare(a.dateStr); // newest first within same priority
       });
 
+      // Log detectChanges results to Admin log
+      if (toDelete.length)
+        AppLog.add('Drive API', `FileIndex — ${toDelete.length} date(s) removed from Drive`, 'WARN',
+          toDelete.join(', '));
+      if (!toRebuild.length) {
+        AppLog.add('App', 'Change detection — all dates current, no rebuild needed', 'OK');
+      } else {
+        const byReason = {};
+        toRebuild.forEach(({ dateStr, reason }) => {
+          if (!byReason[reason]) byReason[reason] = [];
+          byReason[reason].push(dateStr);
+        });
+        const reasonLabels = {
+          bp_modified: 'BP source modified',
+          rd_modified: 'RD source modified',
+          rd_added:    'RD newly added',
+          missing_zone:'missing zone data',
+          missing_regions:'missing region data',
+          new:         'new date'
+        };
+        for (const [reason, dates] of Object.entries(byReason)) {
+          AppLog.add('App', `Change detection — ${dates.length} date(s): ${reasonLabels[reason]||reason}`, 'WARN',
+            dates.join(', '));
+        }
+      }
+
     } catch(e) { console.warn('_detectChanges:', e.message); }
     return { toRebuild: toRebuild.slice(0, this._MAX_PER_SESSION), toDelete };
   },
@@ -5377,7 +5481,11 @@ const Admin = {
     if(name==='paramorder')this.loadParamOrderUI();
     if(name==='upload'){this.refreshSummaryStatus();this.refreshDriveStats();}
   },
-  open(){document.getElementById('adminOverlay').classList.add('open');this.loadUI();},
+  open(){
+    APILog.startNewSession(); // each admin panel open = new log session
+    document.getElementById('adminOverlay').classList.add('open');
+    this.loadUI();
+  },
   close() {
     document.getElementById('adminOverlay').classList.remove('open');
     // Push admin log to Drive in background
@@ -6909,15 +7017,15 @@ const AdminLogUI = {
     const dates = await APILog.getLogDates();
     this._logDates = new Set(dates);
     // Also add today if we have current session entries
-    if (APILog._entries.length) {
-      this._logDates.add(APILog._session.substring(0,10));
+    if (APILog._session && APILog._entries.length) {
+      this._logDates.add(APILog._localDateStr()); // local device date for current session
     }
     this._calYear = new Date().getFullYear();
     this._calMonth = new Date().getMonth();
     this._selectedDate = null;
     this._renderCalendar();
     // Auto-select today if it has logs
-    const today = new Date().toISOString().substring(0,10);
+    const today = APILog._localDateStr();
     if (this._logDates.has(today)) {
       this.selectDate(today);
     } else {
@@ -6942,7 +7050,7 @@ const AdminLogUI = {
 
     const firstDay = new Date(this._calYear, this._calMonth, 1).getDay();
     const daysInMonth = new Date(this._calYear, this._calMonth + 1, 0).getDate();
-    const today = new Date().toISOString().substring(0,10);
+    const today = APILog._localDateStr();
 
     // Empty cells before first day
     for (let i = 0; i < firstDay; i++)
@@ -7002,7 +7110,7 @@ const AdminLogUI = {
 
     let data;
     // Today's data comes from live APILog._entries + IDB
-    const today = new Date().toISOString().substring(0,10);
+    const today = APILog._localDateStr();
     if (dateStr === today && APILog._entries.length) {
       await APILog._flushToIDB();
     }
@@ -7302,7 +7410,7 @@ const AppLog = {
     const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `BP_ACTIVITYLOG_${new Date().toISOString().substring(0,10)}.json`;
+    a.download = `BP_ACTIVITYLOG_${APILog._localDateStr()}.json`;
     a.click();
   }
 };
