@@ -711,6 +711,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <!-- Actions -->
         <div style="display:flex;gap:8px;margin-top:10px">
           <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.copyFiltered()">📋 Copy</button>
+          <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.exportLog()">⬇ Export</button>
           <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.clear()">🗑 Clear</button>
         </div>
         <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:6px" id="actCount"></div>
@@ -810,7 +811,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     </div>
     <div class="adm-body">
       <nav id="adminNav">
-        <div class="anav-item active" data-sec="datasource" onclick="Admin.showSec('datasource')"><span class="ico">📁</span>Data Source</div>
+        <div class="anav-item" data-sec="datasource" onclick="Admin.showSec('datasource')"><span class="ico">📁</span>Data Source</div>
         <div class="anav-item" data-sec="zone" onclick="Admin.showSec('zone')"><span class="ico">🏛</span>Zone</div>
         <div class="anav-item" data-sec="periods" onclick="Admin.showSec('periods')"><span class="ico">📅</span>Time Periods</div>
         <div class="anav-item" data-sec="holidays" onclick="Admin.showSec('holidays')"><span class="ico">📆</span>Holidays</div>
@@ -819,6 +820,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="anav-item" data-sec="security" onclick="Admin.showSec('security')"><span class="ico">🔒</span>Security</div>
         <div class="anav-item" data-sec="derived" onclick="Admin.showSec('derived')"><span class="ico">🔢</span>Derived Params</div>
         <div class="anav-item" data-sec="paramorder" onclick="Admin.showSec('paramorder')"><span class="ico">↕</span>Param Order</div>
+        <div class="anav-item" data-sec="adminlog" onclick="Admin.showSec('adminlog');AdminLogUI.open()"><span class="ico">🔍</span>Admin Log</div>
       </nav>
       <div class="adm-secs">
 
@@ -1068,6 +1070,49 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <div id="paramOrderList"></div>
         </div>
 
+        <!-- ── Admin Log Section ── -->
+        <div class="asec" id="asec-adminlog" style="padding-bottom:0">
+          <h3>Admin Log</h3>
+          <p class="desc">All API communications with Google Drive, Sheets, GitHub and OAuth. Saved to Drive on admin panel close.</p>
+
+          <!-- Calendar -->
+          <div id="alCal" style="margin-bottom:14px">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <button class="btn-s" style="padding:4px 10px;font-size:13px" onclick="AdminLogUI.prevMonth()">‹</button>
+              <span id="alCalTitle" style="font-weight:600;font-size:13px;color:var(--text)"></span>
+              <button class="btn-s" style="padding:4px 10px;font-size:13px" onclick="AdminLogUI.nextMonth()">›</button>
+            </div>
+            <div id="alCalGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;font-size:11px"></div>
+          </div>
+
+          <!-- Session pills -->
+          <div id="alSessions" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;min-height:28px"></div>
+
+          <!-- Filter chips -->
+          <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px">
+            <button class="act-chip active" onclick="AdminLogUI.setFilter('all',this)">All</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('Drive',this)">Drive</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('Sheets',this)">Sheets</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('GitHub',this)">GitHub</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('OAuth',this)">OAuth</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('GAS',this)">GAS</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
+          </div>
+
+          <!-- Log area -->
+          <div id="alLogWrap" style="height:340px;overflow-y:auto;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.8">
+            <div id="alLogBody" style="padding:6px 10px"></div>
+          </div>
+
+          <!-- Actions -->
+          <div style="display:flex;gap:8px;margin-top:10px;padding-bottom:12px">
+            <button class="btn-s" style="flex:1;font-size:11px" onclick="AdminLogUI.copyLog()">📋 Copy</button>
+            <button class="btn-s" style="flex:1;font-size:11px" onclick="AdminLogUI.exportLog()">⬇ Export</button>
+            <button class="btn-s" style="flex:1;font-size:11px" onclick="AdminLogUI.pushNow()">☁ Save to Drive</button>
+          </div>
+          <div id="alCount" style="font-size:10px;color:var(--text3);text-align:center;padding-bottom:10px"></div>
+        </div>
+
       </div>
     </div>
     <div class="adm-ftr">
@@ -1082,6 +1127,275 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 
 <script>
 'use strict';
+// ================================================================
+// APILOG — global fetch interceptor + admin log persistence
+// ================================================================
+const APILog = {
+  _session: new Date().toISOString().replace('T',' ').substring(0,19),
+  _sessionId: Date.now(),
+  _entries: [],          // current session entries
+  _flushTimer: null,
+  _MAX_MEM: 1000,
+
+  // Entity detection from URL
+  _entity(url) {
+    if (!url) return null;
+    const s = url.toString();
+    if (s.includes('sheets.googleapis.com') || s.includes('/spreadsheets/'))       return 'Sheets';
+    if (s.includes('drive.googleapis.com') || s.includes('upload/drive'))          return 'Drive';
+    if (s.includes('accounts.google.com') || s.includes('oauth2.googleapis.com'))  return 'OAuth';
+    if (s.includes('api.github.com') || s.includes('raw.githubusercontent.com'))   return 'GitHub';
+    if (s.includes('script.google.com'))                                            return 'GAS';
+    if (s.includes('googleapis.com'))                                               return 'Drive'; // catch-all
+    return null; // not an API call we care about
+  },
+
+  // Build a human-readable label from URL + method
+  _label(url, method, opts) {
+    const s = url.toString();
+    method = (method || opts?.method || 'GET').toUpperCase();
+    // Drive file operations
+    if (s.includes('/drive/v3/files/') && s.includes('alt=media'))  return `GET file content`;
+    if (s.includes('/drive/v3/files/') && s.includes('/permissions')) return `SET permissions`;
+    if (s.includes('/drive/v3/files/') && s.includes('uploadType=multipart') && method==='PATCH') return `UPDATE file`;
+    if (s.includes('/drive/v3/files/') && s.includes('uploadType=multipart')) return `UPLOAD file`;
+    if (s.includes('/drive/v3/files/') && s.includes('copy'))        return `COPY file`;
+    if (s.includes('/drive/v3/files?q=') || s.includes('/drive/v3/files?')) {
+      const q = decodeURIComponent(s).match(/q=([^&]+)/)?.[1]||'';
+      if (q.includes('mimeType=') && q.includes('name='))   return `FIND file by name`;
+      if (q.includes('mimeType=') && q.includes('parents')) return `LIST folder`;
+      if (q.includes('parents'))                             return `LIST folder`;
+      return `QUERY files`;
+    }
+    if (s.includes('/drive/v3/files/')) return `${method} file`;
+    // Sheets
+    if (s.includes('/values/'))   return `READ sheet values`;
+    if (s.includes('/batchGet'))  return `BATCH read sheets`;
+    if (s.includes('/spreadsheets/') && method==='GET') return `GET spreadsheet`;
+    // GitHub
+    if (s.includes('raw.githubusercontent.com'))  return `GET config.json`;
+    if (s.includes('api.github.com') && method==='PUT')  return `PUT config.json`;
+    if (s.includes('api.github.com') && method==='GET')  return `GET repo file`;
+    // OAuth
+    if (s.includes('token'))  return `Token exchange`;
+    if (s.includes('revoke')) return `Revoke token`;
+    return `${method} request`;
+  },
+
+  // Sanitise URL for logging — truncate IDs and remove secrets
+  _safeUrl(url) {
+    let s = url.toString();
+    // Remove API key
+    s = s.replace(/([?&]key=)[^&]+/, '$1[key]');
+    // Truncate long file IDs (keep first 8 chars)
+    s = s.replace(/\/files\/([A-Za-z0-9_-]{9,})/g, (m,id) => `/files/${id.substring(0,8)}…`);
+    s = s.replace(/parents.*?'([A-Za-z0-9_-]{9,})'/g, (m,id) => `parents='${id.substring(0,8)}…'`);
+    // Truncate spreadsheet IDs
+    s = s.replace(/\/spreadsheets\/([A-Za-z0-9_-]{9,})/g, (m,id) => `/spreadsheets/${id.substring(0,8)}…`);
+    // Remove Authorization header value from any logged opts
+    if (s.length > 160) s = s.substring(0,157) + '…';
+    return s;
+  },
+
+  // Record an entry and forward to AppLog
+  _record(entity, label, status, ok, durationMs, detail, isErr) {
+    const entry = {
+      ts: new Date(),
+      sessionId: this._sessionId,
+      session: this._session,
+      entity,
+      label,
+      status,
+      ok,
+      durationMs,
+      detail: detail || '',
+      stream: 'api'   // distinguishes from 'app' stream entries
+    };
+    this._entries.push(entry);
+    if (this._entries.length > this._MAX_MEM) this._entries.shift();
+
+    // Forward to AppLog for live Activity tab display
+    const appStatus = ok ? 'OK' : (isErr ? 'ERR' : 'WARN');
+    const appDetail = [detail, durationMs ? `${durationMs}ms` : ''].filter(Boolean).join(' · ');
+    AppLog.add(entity, label, appStatus, appDetail);
+
+    // Schedule flush to IndexedDB
+    this._scheduleFlush();
+  },
+
+  _scheduleFlush() {
+    if (this._flushTimer) return;
+    this._flushTimer = setTimeout(() => {
+      this._flushTimer = null;
+      this._flushToIDB().catch(() => {});
+    }, 2000);
+  },
+
+  async _flushToIDB() {
+    if (!this._entries.length) return;
+    try {
+      const dateKey = `adminlog:${this._session.substring(0,10)}`;
+      const existing = await DB.get('config', dateKey) || { dates: {} };
+      const sid = this._sessionId;
+      if (!existing.dates[sid]) existing.dates[sid] = { session: this._session, entries: [] };
+      // Append only new entries (avoid duplicates on multiple flushes)
+      const stored = existing.dates[sid].entries;
+      const newEntries = this._entries.slice(stored.length);
+      newEntries.forEach(e => stored.push({
+        ts: e.ts.toISOString(), entity: e.entity, label: e.label,
+        status: e.status, ok: e.ok, durationMs: e.durationMs,
+        detail: e.detail, stream: e.stream
+      }));
+      await DB.set('config', dateKey, existing);
+    } catch(e) { /* non-fatal */ }
+  },
+
+  // Called by Admin.close() — push today's log to Drive
+  async pushToDrive() {
+    try {
+      await this._flushToIDB(); // ensure latest entries are in IDB first
+      const token = GDrive.token;
+      if (!token) return;
+      const dateStr = this._session.substring(0, 10);
+      const dateKey = `adminlog:${dateStr}`;
+      const logData = await DB.get('config', dateKey);
+      if (!logData) return;
+
+      // Find or create ADMIN_LOGS folder
+      const parentId = Cfg.get('gBpFolderId')
+        ? await GDrive._getParentFolderId(Cfg.get('gBpFolderId')) : null;
+      if (!parentId) return;
+
+      let folderId = null;
+      const fq = encodeURIComponent(`'${parentId}' in parents and name='ADMIN_LOGS' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+      const fr = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (fr.ok) {
+        const fd = await fr.json();
+        folderId = fd.files?.[0]?.id;
+      }
+      if (!folderId) {
+        const cr = await window._origFetch('https://www.googleapis.com/drive/v3/files',
+          { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'ADMIN_LOGS', mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }) });
+        if (cr.ok) folderId = (await cr.json()).id;
+      }
+      if (!folderId) return;
+
+      // Check for existing file for this date
+      const fname = `BP_ADMINLOG_${dateStr}.json`;
+      const eq = encodeURIComponent(`'${folderId}' in parents and name='${fname}' and trashed=false`);
+      const er = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      let existingId = null;
+      if (er.ok) existingId = (await er.json()).files?.[0]?.id;
+
+      // Merge with existing if present
+      let finalData = logData;
+      if (existingId) {
+        const dr = await window._origFetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
+          { headers: { Authorization: `Bearer ${token}` } });
+        if (dr.ok) {
+          const existing = await dr.json().catch(() => null);
+          if (existing?.dates) {
+            // Merge: local wins (has newer data)
+            finalData = { dates: { ...existing.dates, ...logData.dates } };
+          }
+        }
+      }
+
+      // Upload
+      const form = new FormData();
+      const meta = existingId ? '{}' : JSON.stringify({ name: fname, parents: [folderId] });
+      form.append('metadata', new Blob([meta], { type: 'application/json' }));
+      form.append('file', new Blob([JSON.stringify(finalData)], { type: 'application/json' }));
+      const url = existingId
+        ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart`
+        : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
+      await window._origFetch(url, {
+        method: existingId ? 'PATCH' : 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form
+      });
+      AppLog.add('AdminLog', `Session log saved to Drive — ${fname}`, 'OK');
+    } catch(e) {
+      AppLog.add('AdminLog', 'Drive push failed', 'WARN', e.message);
+    }
+  },
+
+  // Get list of dates that have log data in IDB
+  async getLogDates() {
+    try {
+      const keys = await DB.keys('config');
+      return keys.filter(k => k.startsWith('adminlog:')).map(k => k.replace('adminlog:',''));
+    } catch(e) { return []; }
+  },
+
+  // Get log data for a specific date from IDB (or Drive if not local)
+  async getLogForDate(dateStr) {
+    const key = `adminlog:${dateStr}`;
+    let data = await DB.get('config', key).catch(() => null);
+    if (data) return data;
+    // Try Drive
+    try {
+      const token = GDrive.token;
+      if (!token) return null;
+      const parentId = Cfg.get('gBpFolderId')
+        ? await GDrive._getParentFolderId(Cfg.get('gBpFolderId')) : null;
+      if (!parentId) return null;
+      const fq = encodeURIComponent(`'${parentId}' in parents and name='ADMIN_LOGS' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
+      const fr = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (!fr.ok) return null;
+      const fd = await fr.json();
+      const folderId = fd.files?.[0]?.id;
+      if (!folderId) return null;
+      const fname = `BP_ADMINLOG_${dateStr}.json`;
+      const eq = encodeURIComponent(`'${folderId}' in parents and name='${fname}' and trashed=false`);
+      const er = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (!er.ok) return null;
+      const existingId = (await er.json()).files?.[0]?.id;
+      if (!existingId) return null;
+      const dr = await window._origFetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (!dr.ok) return null;
+      data = await dr.json().catch(() => null);
+      if (data) await DB.set('config', key, data).catch(() => {});
+      return data;
+    } catch(e) { return null; }
+  }
+};
+
+// ── Global fetch interceptor ──────────────────────────────────────────────────
+// Runs before DB is ready — entries queued until AppLog is initialised.
+window._origFetch = window.fetch.bind(window);
+window.fetch = async function(url, opts) {
+  const entity = APILog._entity(url);
+  if (!entity) return window._origFetch(url, opts); // not an API we track
+
+  const label  = APILog._label(url, opts?.method, opts);
+  const safeUrl = APILog._safeUrl(url);
+  const t0 = Date.now();
+
+  // Scrub Authorization header from opts before logging
+  let detail = safeUrl;
+
+  try {
+    const resp = await window._origFetch(url, opts);
+    const ms = Date.now() - t0;
+    const ok = resp.ok;
+    const statusDetail = `HTTP ${resp.status} · ${detail}`;
+    APILog._record(entity, label, resp.status.toString(), ok, ms, statusDetail, !ok);
+    return resp;
+  } catch(err) {
+    const ms = Date.now() - t0;
+    APILog._record(entity, label, 'ERR', false, ms, `Exception: ${err.message} · ${detail}`, true);
+    throw err;
+  }
+};
+// ── end interceptor ───────────────────────────────────────────────────────────
+
 // ================================================================
 // DB
 // ================================================================
@@ -4989,6 +5303,8 @@ const Admin = {
   open(){document.getElementById('adminOverlay').classList.add('open');this.loadUI();},
   close() {
     document.getElementById('adminOverlay').classList.remove('open');
+    // Push admin log to Drive in background
+    APILog.pushToDrive().catch(() => {});
     const np = document.getElementById('noSummaryPrompt');
     const zone = Cfg.get('activeZone');
     // If noSummaryPrompt was showing, check if data is now available
@@ -6499,6 +6815,265 @@ const Carousel = {
 // ================================================================
 // APP LOG — real-time activity log visible in Activities tab
 // ================================================================
+// ================================================================
+// ADMINLOGUI — calendar + session browser + filtered log view
+// ================================================================
+const AdminLogUI = {
+  _calYear: new Date().getFullYear(),
+  _calMonth: new Date().getMonth(), // 0-based
+  _selectedDate: null,
+  _selectedSession: null,
+  _logDates: new Set(),   // dates with log data
+  _currentEntries: [],    // entries currently displayed
+  _filter: 'all',
+
+  async open() {
+    // Load dates that have logs
+    const dates = await APILog.getLogDates();
+    this._logDates = new Set(dates);
+    // Also add today if we have current session entries
+    if (APILog._entries.length) {
+      this._logDates.add(APILog._session.substring(0,10));
+    }
+    this._calYear = new Date().getFullYear();
+    this._calMonth = new Date().getMonth();
+    this._selectedDate = null;
+    this._renderCalendar();
+    // Auto-select today if it has logs
+    const today = new Date().toISOString().substring(0,10);
+    if (this._logDates.has(today)) {
+      this.selectDate(today);
+    } else {
+      document.getElementById('alSessions').innerHTML =
+        '<span style="font-size:11px;color:var(--text3)">Select a date with logs</span>';
+      document.getElementById('alLogBody').innerHTML = '';
+      document.getElementById('alCount').textContent = '';
+    }
+  },
+
+  _renderCalendar() {
+    const months = ['January','February','March','April','May','June',
+                    'July','August','September','October','November','December'];
+    document.getElementById('alCalTitle').textContent =
+      `${months[this._calMonth]} ${this._calYear}`;
+
+    const grid = document.getElementById('alCalGrid');
+    const days = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+    let html = days.map(d =>
+      `<div style="color:var(--text3);font-weight:600;padding:2px 0">${d}</div>`
+    ).join('');
+
+    const firstDay = new Date(this._calYear, this._calMonth, 1).getDay();
+    const daysInMonth = new Date(this._calYear, this._calMonth + 1, 0).getDate();
+    const today = new Date().toISOString().substring(0,10);
+
+    // Empty cells before first day
+    for (let i = 0; i < firstDay; i++)
+      html += '<div></div>';
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateStr = `${this._calYear}-${String(this._calMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const hasLogs = this._logDates.has(dateStr);
+      const isToday = dateStr === today;
+      const isSelected = dateStr === this._selectedDate;
+
+      let style = 'padding:3px 0;cursor:pointer;border-radius:5px;position:relative;';
+      let textStyle = 'display:block;';
+
+      if (isSelected) {
+        style += 'background:var(--blue);';
+        textStyle += 'color:#fff;font-weight:700;';
+      } else if (hasLogs) {
+        style += 'background:var(--bg3);';
+        textStyle += 'color:var(--text);font-weight:600;';
+      } else {
+        style += 'opacity:0.4;cursor:default;';
+        textStyle += 'color:var(--text3);';
+      }
+      if (isToday && !isSelected) textStyle += 'text-decoration:underline;color:var(--blue);';
+
+      const dot = hasLogs && !isSelected
+        ? '<span style="position:absolute;bottom:1px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--blue);display:block"></span>'
+        : '';
+
+      const onclick = hasLogs ? `onclick="AdminLogUI.selectDate('${dateStr}')"` : '';
+      html += `<div style="${style}" ${onclick}><span style="${textStyle}">${d}</span>${dot}</div>`;
+    }
+    grid.innerHTML = html;
+  },
+
+  prevMonth() {
+    this._calMonth--;
+    if (this._calMonth < 0) { this._calMonth = 11; this._calYear--; }
+    this._renderCalendar();
+  },
+
+  nextMonth() {
+    this._calMonth++;
+    if (this._calMonth > 11) { this._calMonth = 0; this._calYear++; }
+    this._renderCalendar();
+  },
+
+  async selectDate(dateStr) {
+    this._selectedDate = dateStr;
+    this._selectedSession = null;
+    this._renderCalendar();
+
+    // Load log data for this date
+    const sessionsEl = document.getElementById('alSessions');
+    sessionsEl.innerHTML = '<span style="font-size:11px;color:var(--text3)">Loading…</span>';
+
+    let data;
+    // Today's data comes from live APILog._entries + IDB
+    const today = new Date().toISOString().substring(0,10);
+    if (dateStr === today && APILog._entries.length) {
+      await APILog._flushToIDB();
+    }
+    data = await APILog.getLogForDate(dateStr);
+
+    if (!data?.dates || !Object.keys(data.dates).length) {
+      sessionsEl.innerHTML = '<span style="font-size:11px;color:var(--text3)">No sessions found for this date</span>';
+      return;
+    }
+
+    // Render session pills
+    const sessions = Object.entries(data.dates).sort((a,b) => a[1].session.localeCompare(b[1].session));
+    let pillsHTML = '';
+    for (const [sid, s] of sessions) {
+      const errCount = (s.entries||[]).filter(e => e.status === 'ERR' || !e.ok).length;
+      const errBadge = errCount ? `<span style="color:var(--red);margin-left:4px">· ${errCount} err</span>` : '';
+      pillsHTML += `<div class="act-chip" style="cursor:pointer;padding:5px 10px;font-size:10px"
+        onclick="AdminLogUI.selectSession('${sid}')"
+        id="alpill_${sid}">
+        ${s.session.substring(11,19)} · ${(s.entries||[]).length} entries${errBadge}
+      </div>`;
+    }
+    sessionsEl.innerHTML = pillsHTML;
+
+    // Collect all entries for this date
+    this._allEntries = [];
+    for (const [sid, s] of sessions) {
+      (s.entries||[]).forEach(e => this._allEntries.push({
+        ...e, ts: new Date(e.ts), sessionId: sid, sessionTime: s.session.substring(11,19)
+      }));
+    }
+    this._currentEntries = this._allEntries;
+    this._renderLog();
+
+    // Auto-select latest session
+    if (sessions.length) this.selectSession(sessions[sessions.length-1][0]);
+  },
+
+  selectSession(sid) {
+    this._selectedSession = sid;
+    // Highlight pill
+    document.querySelectorAll('[id^="alpill_"]').forEach(p => p.classList.remove('active'));
+    const pill = document.getElementById(`alpill_${sid}`);
+    if (pill) pill.classList.add('active');
+    // Scroll log to first entry of this session
+    const marker = document.getElementById(`almark_${sid}`);
+    if (marker) {
+      const wrap = document.getElementById('alLogWrap');
+      if (wrap) wrap.scrollTop = marker.offsetTop - 8;
+    }
+  },
+
+  setFilter(f, btn) {
+    this._filter = f;
+    document.querySelectorAll('#asec-adminlog .act-chip').forEach(c => c.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    this._renderLog();
+  },
+
+  _filteredEntries() {
+    if (!this._currentEntries) return [];
+    if (this._filter === 'all') return this._currentEntries;
+    if (this._filter === 'ERR') return this._currentEntries.filter(e => !e.ok || e.status === 'ERR');
+    return this._currentEntries.filter(e => e.entity === this._filter);
+  },
+
+  _entryHTML(e, isSessionStart) {
+    const ok = e.ok !== false;
+    const isErr = !ok || e.status === 'ERR';
+    const cls = isErr ? 'alog-err' : (e.status === 'WARN' ? 'alog-warn' : 'alog-ok');
+    const badge = isErr ? '✗' : (e.status === 'WARN' ? '⚠' : '✓');
+    const ts = e.ts instanceof Date ? e.ts.toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}) : (e.ts||'').substring(11,19);
+    const entityColors = {Drive:'#58a6ff',Sheets:'#3fb950',GitHub:'#d2a8ff',OAuth:'#ffa657',GAS:'#ff7b72'};
+    const ec = entityColors[e.entity] || 'var(--text2)';
+    const dur = e.durationMs ? `<span style="color:var(--text3);font-size:9px"> ${e.durationMs}ms</span>` : '';
+    return `<div style="padding:2px 0;border-bottom:1px solid var(--border2)">
+      <span style="color:var(--text3);font-size:9px">${ts} </span>
+      <span class="${cls}" style="font-weight:700">${badge} </span>
+      <span style="color:${ec};font-size:10px">[${e.entity||''}]</span>
+      <span style="color:var(--text2)"> ${e.label||e.action||''}</span>${dur}
+      ${e.detail?`<div style="padding-left:12px;color:var(--text3);font-size:9px;word-break:break-all">${e.detail}</div>`:''}
+    </div>`;
+  },
+
+  _renderLog() {
+    const entries = this._filteredEntries();
+    // Group by session for anchor markers
+    let html = '';
+    let lastSid = null;
+    for (const e of entries) {
+      if (e.sessionId !== lastSid) {
+        lastSid = e.sessionId;
+        html += `<div id="almark_${e.sessionId}" style="background:var(--bg3);color:var(--text3);font-size:9px;padding:3px 8px;border-radius:4px;margin:4px 0">── Session ${e.sessionTime||e.sessionId} ──</div>`;
+      }
+      html += this._entryHTML(e);
+    }
+    const body = document.getElementById('alLogBody');
+    if (body) body.innerHTML = html || '<div style="padding:20px;text-align:center;color:var(--text3);font-size:11px">No entries match filter</div>';
+    const count = document.getElementById('alCount');
+    const total = this._currentEntries?.length || 0;
+    const errCount = (this._currentEntries||[]).filter(e => !e.ok || e.status==='ERR').length;
+    if (count) count.textContent = `${entries.length} shown · ${total} total` + (errCount ? ` · ${errCount} errors` : '');
+  },
+
+  copyLog() {
+    const entries = this._filteredEntries();
+    const text = entries.map(e => {
+      const ts = e.ts instanceof Date ? e.ts.toLocaleTimeString('en',{hour12:false}) : (e.ts||'').substring(11,19);
+      const ok = e.ok !== false ? 'OK' : 'ERR';
+      return `[${this._selectedDate||''} ${ts}] ${ok} [${e.entity}] ${e.label||e.action||''}${e.detail?' — '+e.detail:''}`;
+    }).join('\n');
+    navigator.clipboard.writeText(text)
+      .then(()=>alert('Copied!'))
+      .catch(()=>prompt('Copy log:', text));
+  },
+
+  exportLog() {
+    const entries = this._filteredEntries();
+    const data = {
+      date: this._selectedDate,
+      exportedAt: new Date().toISOString(),
+      filter: this._filter,
+      entries: entries.map(e => ({
+        ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
+        session: e.sessionTime,
+        entity: e.entity,
+        label: e.label || e.action,
+        status: e.status,
+        ok: e.ok,
+        durationMs: e.durationMs,
+        detail: e.detail
+      }))
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `BP_ADMINLOG_${this._selectedDate||'export'}.json`;
+    a.click();
+  },
+
+  async pushNow() {
+    const btn = event?.target;
+    if (btn) { btn.textContent = '⏳ Saving…'; btn.disabled = true; }
+    await APILog.pushToDrive();
+    if (btn) { btn.textContent = '✓ Saved'; setTimeout(()=>{ btn.textContent='☁ Save to Drive'; btn.disabled=false; }, 2000); }
+  }
+};
+
 const AppLog = {
   _entries: [],
   _MAX: 300,
@@ -6632,6 +7207,26 @@ const AppLog = {
     if (body) body.innerHTML = '';
     this._updateCount();
     DB.set('config','appLog',[]).catch(()=>{});
+  },
+
+  exportLog() {
+    const entries = this._filteredEntries();
+    const data = {
+      exportedAt: new Date().toISOString(),
+      filter: this._filter,
+      entries: entries.map(e => ({
+        ts: e.ts.toISOString(),
+        entity: e.entity,
+        action: e.action,
+        status: e.status,
+        detail: e.detail
+      }))
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `BP_ACTIVITYLOG_${new Date().toISOString().substring(0,10)}.json`;
+    a.click();
   }
 };
 
