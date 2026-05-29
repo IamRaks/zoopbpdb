@@ -1650,49 +1650,49 @@ const ConfigSync = {
     return cfg;
   },
 
-  async push() {
+  async push(silent = false) {
     const bar = document.getElementById('cfgSyncBar');
-    bar.classList.add('vis');
-    bar.textContent = '⏳ Pushing config to GitHub...';
+    const setBar = (msg) => { if (bar) { bar.classList.add('vis'); bar.textContent = msg; } };
+
+    setBar('⏳ Pushing config to GitHub...');
 
     const user = Cfg.get('ghUsername') || '';
     const repo = Cfg.get('ghRepo') || '';
     const pat = await this.getPat();
 
     if (!user || !repo || !pat) {
-      bar.textContent = '✗ Fill in GitHub username, repo name and PAT first.';
-      return;
+      const msg = '✗ Fill in GitHub username, repo name and PAT first.';
+      setBar(msg);
+      if (!silent) AppLog.add('GitHub', 'Config push skipped — credentials missing', 'WARN');
+      return false;
     }
 
     try {
-      // First save current config to IndexedDB
       await Cfg.save();
 
-      // Get current file SHA (needed for update)
+      // Get current file SHA — retry once on network error
       let sha = null;
-      try {
-        const check = await fetch(this._apiUrl(user, repo), {
-          headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' }
-        });
-        if (check.ok) {
-          const data = await check.json();
-          sha = data.sha;
-        }
-      } catch(e) {} // File doesn't exist yet — that's fine
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const check = await fetch(this._apiUrl(user, repo), {
+            headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' }
+          });
+          if (check.ok) { sha = (await check.json()).sha; break; }
+          if (check.status === 404) break; // file doesn't exist yet — fine
+        } catch(e) { if (attempt === 1) throw e; await new Promise(r => setTimeout(r, 1000)); }
+      }
 
-      // Build config JSON
       const configObj = this._buildConfigObj();
       const content = JSON.stringify(configObj, null, 2);
       const encoded = btoa(unescape(encodeURIComponent(content)));
 
-      // Push to GitHub
       const body = {
         message: `Config update ${new Date().toISOString().slice(0,10)}`,
         content: encoded,
         ...(sha ? { sha } : {})
       };
 
-      const resp = await fetch(this._apiUrl(user, repo), {
+      let resp = await fetch(this._apiUrl(user, repo), {
         method: 'PUT',
         headers: {
           Authorization: `token ${pat}`,
@@ -1702,16 +1702,44 @@ const ConfigSync = {
         body: JSON.stringify(body)
       });
 
+      // 409 conflict = SHA stale — refetch SHA and retry once
+      if (resp.status === 409) {
+        AppLog.add('GitHub', 'Config push — SHA conflict, retrying', 'WARN');
+        const recheck = await fetch(this._apiUrl(user, repo), {
+          headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' }
+        });
+        if (recheck.ok) {
+          const freshSha = (await recheck.json()).sha;
+          body.sha = freshSha;
+          resp = await fetch(this._apiUrl(user, repo), {
+            method: 'PUT',
+            headers: {
+              Authorization: `token ${pat}`,
+              Accept: 'application/vnd.github.v3+json',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          });
+        }
+      }
+
       if (resp.ok) {
-        bar.textContent = '✓ Config pushed to GitHub. All devices will load updated settings within 30 seconds.';
-        // Save last push time
+        setBar('✓ Config pushed to GitHub. All devices will load updated settings within 30 seconds.');
         await DB.set('config', 'lastConfigPush', new Date().toISOString());
+        if (!silent) AppLog.add('GitHub', 'Config pushed — summaryFileIds saved', 'OK',
+          `summaryFileIds.recent=${(Cfg.get('summaryFileIds')||{}).recent?.substring(0,12)||'null'}`);
+        return true;
       } else {
-        const err = await resp.json();
-        bar.textContent = `✗ GitHub error: ${err.message}`;
+        const err = await resp.json().catch(() => ({}));
+        const msg = `✗ GitHub error: ${err.message || resp.status}`;
+        setBar(msg);
+        AppLog.add('GitHub', 'Config push failed', 'ERR', `HTTP ${resp.status}: ${err.message||''}`);
+        return false;
       }
     } catch(e) {
-      bar.textContent = `✗ Error: ${e.message}`;
+      setBar(`✗ Error: ${e.message}`);
+      AppLog.add('GitHub', 'Config push exception', 'ERR', e.message);
+      return false;
     }
   },
 
@@ -2144,39 +2172,39 @@ const XLSXConverter = {
       if (toConvert.some(i => i.type === 'rd'))
         rdCacheFolderId = await this._getCacheFolderId(token, parentFolderId, 'rd');
 
-      // ── Name-based prescan — 1 Drive call, no stale folder cache dependency ─
-      // Searches for already-converted Sheets by EXACT filename across all files
-      // accessible to this OAuth client. Avoids the stale-folder-ID problem where
-      // _getCacheFolderId returns an old BP_Sheets_Cache ID that doesn't contain
-      // recently-converted sheets (can happen if multiple cache folders exist).
-      try {
-        const nameFilter = toConvert
-          .map(i => `name='${i.type === 'bp' ? i.entry.bpName : i.entry.rdName}'`)
-          .join(' or ');
-        if (nameFilter) {
+      // ── Folder-based prescan — query each cache folder once ───────────────
+      // drive.file scope only returns files THIS OAuth session created, so a
+      // drive-wide name search misses sheets made in previous sessions.
+      // The cache FOLDERS are always visible (created by the app) — query them
+      // directly. One Drive call per folder = 2 total, catches all existing sheets.
+      const prescanFolder = async (cacheFolderId, type) => {
+        if (!cacheFolderId) return;
+        try {
           const q = encodeURIComponent(
-            `(${nameFilter}) and mimeType='${this.MIME_SHEET}' and trashed=false`
+            `'${cacheFolderId}' in parents and mimeType='${this.MIME_SHEET}' and trashed=false`
           );
           const pr = await fetch(
             `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=1000`,
             { headers: { Authorization: `Bearer ${token}` } }
           );
-          if (pr.ok) {
-            const pd = await pr.json();
-            const byName = {};
-            (pd.files || []).forEach(f => { byName[f.name] = f.id; });
-            for (const item of toConvert) {
-              const name = item.type === 'bp' ? item.entry.bpName : item.entry.rdName;
-              const existingId = byName[name];
-              if (!existingId) continue;
-              const updated = await DB.get('fileIndex', item.dk) || item.entry;
-              if (item.type === 'bp') { updated.bpSheetId = existingId; updated.bpConverted = true; }
-              else                    { updated.rdSheetId = existingId; updated.rdConverted = true; }
-              await DB.set('fileIndex', item.dk, updated);
-            }
+          if (!pr.ok) return;
+          const pd = await pr.json();
+          const byName = {};
+          (pd.files || []).forEach(f => { byName[f.name] = f.id; });
+          for (const item of toConvert) {
+            if (item.type !== type) continue;
+            const name = type === 'bp' ? item.entry.bpName : item.entry.rdName;
+            const existingId = byName[name];
+            if (!existingId) continue;
+            const updated = await DB.get('fileIndex', item.dk) || item.entry;
+            if (type === 'bp') { updated.bpSheetId = existingId; updated.bpConverted = true; }
+            else               { updated.rdSheetId = existingId; updated.rdConverted = true; }
+            await DB.set('fileIndex', item.dk, updated);
           }
-        }
-      } catch(e) { /* non-fatal — fall through to per-file convert */ }
+        } catch(e) { /* non-fatal — fall through to per-file convert */ }
+      };
+      await prescanFolder(bpCacheFolderId, 'bp');
+      await prescanFolder(rdCacheFolderId, 'rd');
 
       // Re-read fileIndex; only convert files not resolved by prescan
       const stillToConvert = [];
@@ -4443,8 +4471,15 @@ const SummaryMgr = {
     };
     Cfg.set('summaryFileIds', ids);
     await Cfg.save();
-    // Push updated config to GitHub so all devices get the file IDs
-    ConfigSync.push().catch(() => {});
+    // Push updated config to GitHub — await and log result
+    AppLog.add('GitHub', 'Saving summary file IDs to config', 'RUN',
+      `recent=${ids.recent?.substring(0,12)||'null'} history=${ids.history?.substring(0,12)||'null'}`);
+    const pushed = await ConfigSync.push(true);
+    if (pushed) {
+      AppLog.add('GitHub', 'Saving summary file IDs to config', 'OK',
+        'All devices will use public URLs on next load');
+    }
+    // else: ConfigSync.push already logged the error
 
     await DB.set('config','summaryLastUpdated', Date.now());
   },
@@ -4513,6 +4548,9 @@ const DataIntegrity = {
 
   // ── Step 1: Download summary from Drive if newer ──────────────
   async _downloadIfNewer(zone) {
+    // Skip if App.init already fetched the summary in this session (within last 30s)
+    const lastFetch = DataIntegrity._lastSummaryFetch || 0;
+    if (Date.now() - lastFetch < 30000) return;
     try {
       const localTs = await DB.get('config','summaryLastUpdated') || 0;
       const fileIds = Cfg.get('summaryFileIds') || {};
@@ -5112,8 +5150,7 @@ const DataIntegrity = {
         const chunks = ['BP_SUMMARY_META.json', 'BP_SUMMARY_RECENT.json'];
         log('', 'Drive API', 'Summary files uploaded and made public', 'OK',
           'BP_SUMMARY_META.json + BP_SUMMARY_RECENT.json (publicly readable)');
-        log('', 'GitHub', 'Saving summary file IDs to config', 'OK',
-          'All devices will use public URLs on next load');
+        // pushToDrive already called ConfigSync.push internally and logged result
         setProgress(98, 'Summary pushed ✓');
       } catch(e) {
         log('', 'Drive API', 'Push failed', 'ERR', e.message);
@@ -7359,6 +7396,7 @@ const App = {
         if (chunk?.dates && Object.keys(chunk.dates).length > 0) {
           await ChartStore.mergeChunk(zone, chunk);
           summaryLoaded = true;
+          DataIntegrity._lastSummaryFetch = Date.now();
           AppLog.add('Summary', 'Merged into IndexedDB', 'OK', Object.keys(chunk.dates).length + ' dates');
           this.showLanding('Preparing dashboard...', 60);
           // Download history in background
