@@ -1638,15 +1638,16 @@ const ConfigSync = {
     } catch(e) { return str; } // return as-is if not obfuscated
   },
 
-  _buildConfigObj() {
+  _buildConfigObj(pat) {
     const cfg = JSON.parse(JSON.stringify(Cfg.d));
-    // Remove write PAT — never stored in GitHub
-    delete cfg.ghPat;
     // Obfuscate sensitive fields to avoid GitHub secret scanning
     const sensitive = ['gClientId', 'gBpFolderId', 'gRdFolderId', 'gApiKey'];
     sensitive.forEach(k => {
       if (cfg[k]) cfg[k] = '__obf__' + this._obfuscate(cfg[k]);
     });
+    // Include PAT obfuscated so admin device can recover it after browser data clear
+    // Safe: repo is private, PAT scope is limited (drive.file + repo read/write only)
+    if (pat) cfg._ghPat = '__obf__' + this._obfuscate(pat);
     return cfg;
   },
 
@@ -1682,7 +1683,8 @@ const ConfigSync = {
         } catch(e) { if (attempt === 1) throw e; await new Promise(r => setTimeout(r, 1000)); }
       }
 
-      const configObj = this._buildConfigObj();
+      const configObj = this._buildConfigObj(pat);
+      configObj._savedAt = new Date().toISOString(); // enables autoLoad timestamp comparison
       const content = JSON.stringify(configObj, null, 2);
       const encoded = btoa(unescape(encodeURIComponent(content)));
 
@@ -1785,7 +1787,6 @@ const ConfigSync = {
 
   async autoLoad() {
     try {
-      // Cache-busting param ensures we always get the latest version
       const resp = await fetch(this.CONFIG_URL + '?t=' + Date.now());
       if (!resp.ok) return false;
       const cfg = await resp.json();
@@ -1795,6 +1796,12 @@ const ConfigSync = {
         if (cfg[k] && cfg[k].startsWith('__obf__'))
           cfg[k] = ConfigSync._deobfuscate(cfg[k].slice(7));
       });
+      // Restore PAT to IndexedDB — survives browser data clear
+      if (cfg._ghPat && cfg._ghPat.startsWith('__obf__')) {
+        const pat = ConfigSync._deobfuscate(cfg._ghPat.slice(7));
+        if (pat) await DB.set('config', 'ghPat', pat);
+        delete cfg._ghPat; // don't store raw PAT in Cfg.d
+      }
       // Only update if remote config is newer than local
       const localTime = (await DB.get('config', 'lastConfigPush')) || '';
       const remoteTime = cfg._savedAt || '';
@@ -2141,6 +2148,19 @@ const XLSXConverter = {
   // Scan fileIndex for XLSX files not yet converted, convert them, update fileIndex
   // onProgress(converted, total, currentName) called after each conversion
   async ensureConverted(onProgress) {
+    // ── Mutex: prevent concurrent runs (e.g. _autoConvertXLSX + Force Rebuild) ──
+    // Concurrent runs build identical toConvert lists and process the same files
+    // simultaneously, creating duplicate sheets on Drive.
+    if (this._converting) {
+      // Wait for the in-progress conversion to finish (max 3 min)
+      let waited = 0;
+      while (this._converting && waited < 180) {
+        await new Promise(r => setTimeout(r, 1000));
+        waited++;
+      }
+      // Return zero — the concurrent run already did the work
+      return { converted: 0, skipped: 0, failed: 0 };
+    }
     this._converting = true;
     try {
       const token = await GDrive.getToken(false).catch(() => null);
@@ -2172,77 +2192,34 @@ const XLSXConverter = {
       if (toConvert.some(i => i.type === 'rd'))
         rdCacheFolderId = await this._getCacheFolderId(token, parentFolderId, 'rd');
 
-      // ── Folder-based prescan — query each cache folder once ───────────────
-      // drive.file scope only returns files THIS OAuth session created, so a
-      // drive-wide name search misses sheets made in previous sessions.
-      // The cache FOLDERS are always visible (created by the app) — query them
-      // directly. One Drive call per folder = 2 total, catches all existing sheets.
-      const prescanFolder = async (cacheFolderId, type) => {
-        if (!cacheFolderId) return;
-        try {
-          const q = encodeURIComponent(
-            `'${cacheFolderId}' in parents and mimeType='${this.MIME_SHEET}' and trashed=false`
-          );
-          const pr = await fetch(
-            `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=1000`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          if (!pr.ok) return;
-          const pd = await pr.json();
-          const byName = {};
-          (pd.files || []).forEach(f => { byName[f.name] = f.id; });
-          for (const item of toConvert) {
-            if (item.type !== type) continue;
-            const name = type === 'bp' ? item.entry.bpName : item.entry.rdName;
-            const existingId = byName[name];
-            if (!existingId) continue;
-            const updated = await DB.get('fileIndex', item.dk) || item.entry;
-            if (type === 'bp') { updated.bpSheetId = existingId; updated.bpConverted = true; }
-            else               { updated.rdSheetId = existingId; updated.rdConverted = true; }
-            await DB.set('fileIndex', item.dk, updated);
-          }
-        } catch(e) { /* non-fatal — fall through to per-file convert */ }
-      };
-      await prescanFolder(bpCacheFolderId, 'bp');
-      await prescanFolder(rdCacheFolderId, 'rd');
+      // No prescan — convertFile already queries by name before copying (idempotent).
+      // Prescan was removed because drive.file scope doesn't return sheets from
+      // prior OAuth sessions, causing it to always return empty and miss existing sheets.
 
-      // Re-read fileIndex; only convert files not resolved by prescan
-      const stillToConvert = [];
-      for (const item of toConvert) {
-        const fresh = await DB.get('fileIndex', item.dk);
-        const done = item.type === 'bp' ? fresh?.bpConverted : fresh?.rdConverted;
-        if (!done) stillToConvert.push({ ...item, entry: fresh || item.entry });
-      }
-      // ── end prescan ───────────────────────────────────────────────────────
+      let converted = 0, skipped = 0, failed = 0;
 
-      let converted = 0, skipped = toConvert.length - stillToConvert.length, failed = 0;
-
-      for (let i = 0; i < stillToConvert.length; i++) {
-        const { dk, type, entry } = stillToConvert[i];
+      for (let i = 0; i < toConvert.length; i++) {
+        const { dk, type, entry } = toConvert[i];
         const xlsxId = type === 'bp' ? entry.bpXlsxId : entry.rdXlsxId;
-        const name = type === 'bp' ? entry.bpName : entry.rdName;
+        const name   = type === 'bp' ? entry.bpName   : entry.rdName;
         const cacheFolderId = type === 'bp' ? bpCacheFolderId : rdCacheFolderId;
         if (!cacheFolderId) { failed++; continue; }
-        if (onProgress) onProgress(i, stillToConvert.length, name);
+        if (onProgress) onProgress(i, toConvert.length, name);
 
         const sheetId = await this.convertFile(token, xlsxId, name, cacheFolderId);
         const updated = await DB.get('fileIndex', dk) || entry;
         if (sheetId) {
-          if (type === 'bp') {
-            updated.bpSheetId = sheetId;
-            updated.bpConverted = true;
-          } else {
-            updated.rdSheetId = sheetId;
-            updated.rdConverted = true;
-          }
+          const alreadyHadIt = type === 'bp' ? !!entry.bpSheetId : !!entry.rdSheetId;
+          if (type === 'bp') { updated.bpSheetId = sheetId; updated.bpConverted = true; }
+          else               { updated.rdSheetId = sheetId; updated.rdConverted = true; }
           await DB.set('fileIndex', dk, updated);
-          converted++;
+          if (alreadyHadIt) skipped++; else converted++;
         } else {
           failed++;
         }
         // Small pause between conversions to avoid Drive API quota
-        if (i < stillToConvert.length - 1)
-          await new Promise(r => setTimeout(r, 500));
+        if (i < toConvert.length - 1)
+          await new Promise(r => setTimeout(r, 300));
       }
 
       return { converted, skipped, failed };
