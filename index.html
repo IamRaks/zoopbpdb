@@ -2940,17 +2940,27 @@ const DE = {
     const rdF=await this.getRD(rdDateStr);
 
     // ── chartData (summary) fallback ─────────────────────────────────────────
-    // When no local BP files are available (new user / no OAuth), use pre-aggregated
-    // summary data from chartData for zone and region scopes.
     if (!bpF) {
       const zone=Cfg.get('activeZone');
       if (zone && (scope.type==='zone' || scope.type==='region')) {
         const scopeKey = scope.type==='zone' ? '__zone__' : scope.region;
         const store = await ChartStore._getStore(zone);
+        const allStoreDates = Object.keys(store?.dates||{});
         const datesToTry = [dateStr];
         if (fallback) {
           const sorted = await ChartStore.getSortedDates(zone); // ascending
           sorted.filter(d=>d<dateStr).reverse().slice(0,10).forEach(d=>datesToTry.push(d));
+        }
+        // Diagnostic: log first zone-scope miss so we can see what's happening
+        if (scope.type==='zone' && allStoreDates.length === 0) {
+          AppLog.add('DE', `getAgg chartData: store empty for zone=${zone}`, 'WARN', `dateStr=${dateStr}`);
+        } else if (scope.type==='zone') {
+          const entry = store?.dates?.[dateStr]?.[scopeKey];
+          if (!entry) {
+            const availScopes = store?.dates?.[dateStr] ? Object.keys(store.dates[dateStr]) : [];
+            AppLog.add('DE', `getAgg chartData: missing __zone__ for ${dateStr}`, 'WARN',
+              `storeDates=${allStoreDates.length}, scopesOnDate=${availScopes.join(',')}`);
+          }
         }
         for (const td of datesToTry) {
           const entry = store?.dates?.[td]?.[scopeKey];
@@ -3614,7 +3624,10 @@ const Dashboard = {
     const params=this.getParamDefs();
     const colDefs=this.getColDefs();
     const latestDate=this.state.periodDates['latest'];
+    if (!latestDate) AppLog.add('Dashboard', 'renderZone: latestDate is null — periodDates not set', 'WARN');
     const latest=latestDate?await DE.getAgg(latestDate,{type:'zone',zone},fb):null;
+    if (!latest && latestDate) AppLog.add('Dashboard', `renderZone: getAgg returned null for ${latestDate}`, 'WARN',
+      `zone=${zone} fb=${fb}`);
     const pmap={},fns=[];
     const neededPeriods=new Set(colDefs.filter(c=>c.periodKey!=='latest').map(c=>c.periodKey));
     for(const pk of neededPeriods){
