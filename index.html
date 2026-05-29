@@ -835,6 +835,9 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
             <div class="fg"><label>Google Client ID</label>
               <input type="text" id="gClientId" placeholder="xxxxxxxx.apps.googleusercontent.com" onchange="GDrive.setClientId(this.value)">
             </div>
+            <div class="fg"><label>Google API Key <span style="font-size:9px;color:var(--text3)">(for public summary access — no login needed)</span></label>
+              <input type="text" id="gApiKey" placeholder="AIzaSy..." onchange="Cfg.set('gApiKey',this.value.trim())">
+            </div>
             <div class="gdrive-status" id="gdriveStatus">
               <div class="gd-dot" id="gdDot"></div>
               <div style="flex:1"><div class="gd-info" id="gdInfo">Not connected</div><div class="gd-user" id="gdUser"></div></div>
@@ -1118,7 +1121,7 @@ const DB = {
 const Cfg = {
   D:{
     bpFolderName:'', rdFolderName:'', fallback:true,
-    dataSource:'drive', gClientId:'', gBpFolderId:'', gRdFolderId:'',
+    dataSource:'drive', gClientId:'', gBpFolderId:'', gRdFolderId:'', gApiKey:'',
     adminPasswordHash:'', adminEmail:'',
     ejsServiceId:'service_8x5yn04', ejsTemplateId:'template_l8mbtk9', ejsPublicKey:'IaT9mZNSS_294Z_J6',
     adminResetToken:'', adminResetExpiry:0,
@@ -1326,7 +1329,7 @@ const ConfigSync = {
     // Remove write PAT — never stored in GitHub
     delete cfg.ghPat;
     // Obfuscate sensitive fields to avoid GitHub secret scanning
-    const sensitive = ['gClientId', 'gBpFolderId', 'gRdFolderId'];
+    const sensitive = ['gClientId', 'gBpFolderId', 'gRdFolderId', 'gApiKey'];
     sensitive.forEach(k => {
       if (cfg[k]) cfg[k] = '__obf__' + this._obfuscate(cfg[k]);
     });
@@ -1445,7 +1448,7 @@ const ConfigSync = {
       if (!resp.ok) return false;
       const cfg = await resp.json();
       // Deobfuscate sensitive fields
-      const sensitive = ['gClientId', 'gBpFolderId', 'gRdFolderId'];
+      const sensitive = ['gClientId', 'gBpFolderId', 'gRdFolderId', 'gApiKey'];
       sensitive.forEach(k => {
         if (cfg[k] && cfg[k].startsWith('__obf__'))
           cfg[k] = ConfigSync._deobfuscate(cfg[k].slice(7));
@@ -2611,9 +2614,11 @@ const GDrive = {
     const cid = document.getElementById('gClientId');
     const bpf = document.getElementById('gBpFolderId');
     const rdf = document.getElementById('gRdFolderId');
+    const ak  = document.getElementById('gApiKey');
     if (cid) cid.value = Cfg.get('gClientId') || '';
     if (bpf) bpf.value = Cfg.get('gBpFolderId') || '';
     if (rdf) rdf.value = Cfg.get('gRdFolderId') || '';
+    if (ak)  ak.value  = Cfg.get('gApiKey') || '';
     const connected = this.token && Date.now() < this.tokenExpiry;
     this._updateUI(connected);
   }
@@ -4002,22 +4007,18 @@ const DataIntegrity = {
       const localTs = await DB.get('config','summaryLastUpdated') || 0;
       const fileIds = Cfg.get('summaryFileIds') || {};
 
-      // Public fetch helper — tries googleapis.com first (CORS-friendly), then drive.google.com
+      // Public fetch using API key — works for publicly shared Drive files
+      const apiKey = Cfg.get('gApiKey') || '';
       const fetchPublic = async (fileId) => {
         if (!fileId) return null;
-        const urls = [
-          `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-          `https://drive.google.com/uc?export=download&confirm=t&id=${fileId}`,
-        ];
-        for (const url of urls) {
-          try {
-            const r = await fetch(url);
-            if (!r.ok) continue;
-            const text = await r.text();
-            if (text.trim().startsWith('{')) return JSON.parse(text);
-          } catch(e) { continue; }
-        }
-        return null;
+        if (!apiKey) return null; // no API key — can't fetch publicly
+        try {
+          const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}`;
+          const r = await fetch(url);
+          if (!r.ok) return null;
+          const text = await r.text();
+          return text.trim().startsWith('{') ? JSON.parse(text) : null;
+        } catch(e) { return null; }
       };
 
       // Authenticated fetch helper — needs OAuth token
@@ -5346,9 +5347,11 @@ const Admin = {
     const cidEl=document.getElementById('gClientId');
     const bpEl=document.getElementById('gBpFolderId');
     const rdEl=document.getElementById('gRdFolderId');
+    const akEl=document.getElementById('gApiKey');
     if(cidEl)Cfg.set('gClientId',cidEl.value.trim());
     if(bpEl)Cfg.set('gBpFolderId',GDrive.parseFolderId(bpEl.value));
     if(rdEl)Cfg.set('gRdFolderId',GDrive.parseFolderId(rdEl.value));
+    if(akEl)Cfg.set('gApiKey',akEl.value.trim());
     await Cfg.save();
     // Check Write PAT before attempting GitHub push
     const pat = await DB.get('config','ghPat').catch(()=>null);
@@ -6507,26 +6510,29 @@ const App = {
     if (summaryIds.recent) {
       AppLog.add('Summary', 'Fetching BP_SUMMARY_RECENT.json publicly', 'RUN', summaryIds.recent);
       try {
-        // Try multiple URL formats for public Drive files
-        // googleapis.com supports CORS properly for public files
-        const urls = [
-          `https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media`,
-          `https://drive.google.com/uc?export=download&confirm=t&id=${summaryIds.recent}`,
-        ];
+        const apiKey = Cfg.get('gApiKey') || '';
+        // googleapis.com with API key works for public files without CORS issues
+        // drive.google.com/uc is blocked by CORS from GitHub Pages
+        const urls = apiKey
+          ? [`https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=${apiKey}`]
+          : [`https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=`];
+
         let chunk = null;
         for (const url of urls) {
           try {
-            AppLog.add('Summary', 'Trying URL', 'RUN', url.substring(0,60)+'...');
+            AppLog.add('Summary', 'Trying URL', 'RUN', url.replace(apiKey, apiKey ? 'AIza...' : '(no key)'));
             const r = await fetch(url);
-            AppLog.add('Summary', 'HTTP response', r.ok ? 'OK' : 'WARN', 'Status: ' + r.status + ' URL: ' + url.substring(0,50));
+            AppLog.add('Summary', 'HTTP response', r.ok ? 'OK' : 'WARN',
+              'Status: ' + r.status + (r.ok ? '' : apiKey ? ' — check API key' : ' — no API key configured'));
             if (!r.ok) continue;
             const text = await r.text();
             if (text.trim().startsWith('{')) {
               chunk = JSON.parse(text);
-              AppLog.add('Summary', 'JSON parsed successfully', 'OK', 'Dates: ' + Object.keys(chunk.dates||{}).length);
+              AppLog.add('Summary', 'JSON parsed successfully', 'OK',
+                'Dates: ' + Object.keys(chunk.dates||{}).length);
               break;
             } else {
-              AppLog.add('Summary', 'Response is not JSON (HTML redirect/login page)', 'WARN', text.substring(0,80));
+              AppLog.add('Summary', 'Response is not JSON', 'WARN', text.substring(0,80));
             }
           } catch(e) {
             AppLog.add('Summary', 'Fetch error', 'ERR', e.message);
@@ -6540,24 +6546,12 @@ const App = {
           this.showLanding('Preparing dashboard...', 60);
           // Download history in background
           if (summaryIds.history) {
-            const histUrls = [
-              `https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media`,
-              `https://drive.google.com/uc?export=download&confirm=t&id=${summaryIds.history}`,
-            ];
-            (async () => {
-              for (const url of histUrls) {
-                try {
-                  const r2 = await fetch(url);
-                  if (!r2.ok) continue;
-                  const t = await r2.text();
-                  if (t.trim().startsWith('{')) {
-                    await ChartStore.mergeChunk(zone, JSON.parse(t));
-                    DataIntegrity._refreshVisibleChart();
-                    break;
-                  }
-                } catch(e) { continue; }
+            const histUrl = `https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media&key=${apiKey}`;
+            fetch(histUrl).then(r2 => r2.ok ? r2.text() : null).then(t => {
+              if (t?.trim().startsWith('{')) {
+                ChartStore.mergeChunk(zone, JSON.parse(t)).then(() => DataIntegrity._refreshVisibleChart());
               }
-            })().catch(() => {});
+            }).catch(() => {});
           }
         }
       } catch(e) { AppLog.add('Summary', 'Public fetch exception', 'ERR', e.message); }
