@@ -1492,51 +1492,72 @@ const SheetsAPI = {
     const token = await GDrive.getToken(false).catch(() => null);
     if (!token) return null;
     try {
-      // Get all data from the sheet — we filter client-side
-      // Request only cols A-Z (enough for all BP/RD columns)
-      const range = encodeURIComponent(`${sheetName}!A:Z`);
+      // Fetch all data — request A:AZ to cover wide sheets
+      const range = encodeURIComponent(`${sheetName}!A:AZ`);
       const url = `${this.BASE}/${sheetId}/values/${range}?majorDimension=ROWS`;
-      const resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!resp.ok) {
         console.warn('Sheets API error:', resp.status, await resp.text());
         return null;
       }
       const data = await resp.json();
       const rows = data.values || [];
-      if (rows.length < 3) return null;
+      if (rows.length < 2) return null;
 
-      // Find header row (row with ZO/Zone column)
-      let headerIdx = -1, headers = [];
-      for (let i = 0; i < Math.min(5, rows.length); i++) {
-        if (rows[i] && (rows[i][0]==='ZO'||rows[i][0]==='Zone')) {
-          headerIdx = i; headers = rows[i]; break;
+      // ── Detect header row by content, not position ──────────────
+      // BP files:  first header = "ZO",   second = "RO"   (12 columns total)
+      // RD files:  first header = "Zone", second = "Region" (13 columns total)
+      let headerIdx = -1, headers = [], isBP = false, isRD = false;
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row.length < 2) continue;
+        const c0 = String(row[0] || '').trim();
+        const c1 = String(row[1] || '').trim();
+        if (c0 === 'ZO' && c1 === 'RO') {
+          headerIdx = i; headers = row; isBP = true; break;
+        }
+        if (c0 === 'Zone' && c1 === 'Region') {
+          headerIdx = i; headers = row; isRD = true; break;
         }
       }
-      if (headerIdx < 0) return null;
 
-      // Filter rows for this zone
-      const zoneColIdx = 0;
-      const dataRows = rows.slice(headerIdx + 1).filter(r =>
-        r && r[zoneColIdx] && String(r[zoneColIdx]).trim() === zone
-      );
+      if (headerIdx < 0) {
+        console.warn(`queryZoneData: no header row found in ${sheetName} (${sheetId})`);
+        return null;
+      }
 
-      // Convert to objects
+      // ── Filter rows for this zone ────────────────────────────────
+      const zoneTrimmed = zone.trim().toUpperCase();
+      const dataRows = rows.slice(headerIdx + 1).filter(r => {
+        if (!r || !r[0]) return false;
+        const cellVal = String(r[0]).trim().toUpperCase();
+        return cellVal === zoneTrimmed;
+      });
+
+      if (!dataRows.length) return [];
+
+      // ── Convert to objects ───────────────────────────────────────
+      // Identifier columns (string) vs value columns (numeric)
+      const BP_ID_COLS  = new Set(['ZO','RO','BRANCH']);
+      const RD_ID_COLS  = new Set(['Zone','Region','Branchname','SOLID']);
+
       return dataRows.map(row => {
         const obj = {};
         headers.forEach((h, j) => {
           if (!h) return;
           const raw = row[j];
-          if (j < 3) {
-            obj[h] = raw ? String(raw).trim() : '';
+          const hTrim = String(h).trim();
+          const isId = isBP ? BP_ID_COLS.has(hTrim) : RD_ID_COLS.has(hTrim);
+          if (isId) {
+            obj[hTrim] = raw ? String(raw).trim() : '';
           } else {
             const num = parseFloat(String(raw || '0').replace(/,/g,''));
-            obj[h] = isNaN(num) ? null : num;
+            obj[hTrim] = isNaN(num) ? null : num;
           }
         });
-        // Extract SOLID for BP files
-        if (obj['BRANCH']) {
+        // Extract SOLID and branch name for BP rows
+        if (isBP && obj['BRANCH']) {
           const parts = obj['BRANCH'].split('-');
           obj['__SOLID__'] = parts[0];
           obj['__BNAME__'] = parts.slice(1).join('-').trim();
@@ -4490,8 +4511,7 @@ const DataIntegrity = {
       if (convResult.converted > 0) {
         log('', 'Drive API', 'XLSX conversion complete', 'OK',
           `${convResult.converted} converted → BP_Sheets_Cache/ and RD_Sheets_Cache/`);
-        DataIntegrity._sheetNameCache = null; // reset — new sheet IDs
-        // Re-read allDates after conversion in case new entries appeared
+        DataIntegrity._sheetNameCache = null;
         allDates = await DB.keys('fileIndex');
       } else if (convResult.failed > 0) {
         log('', 'Drive API', 'Some files could not be converted', 'ERR',
@@ -4499,6 +4519,17 @@ const DataIntegrity = {
       } else {
         log('', 'Drive API', 'All files already in Sheets format', 'OK');
       }
+
+      // Log fileIndex state for each date — shows which dates have missing sheet IDs
+      let missingRD = [], missingBP = [];
+      for (const dk of allDates) {
+        const e = await DB.get('fileIndex', dk);
+        if (!e) continue;
+        if (!e.bpSheetId) missingBP.push(dk);
+        if (e.rdXlsxId && !e.rdSheetId) missingRD.push(dk);
+      }
+      if (missingBP.length) log('', 'Drive API', 'Dates missing BP sheet ID', 'WARN', missingBP.join(', '));
+      if (missingRD.length) log('', 'Drive API', 'Dates missing RD sheet ID (RD XLSX not converted)', 'WARN', missingRD.join(', '));
       setProgress(30, 'Files ready ✓');
 
       // ── Step 5: Cache sheet names ─────────────────────────────
