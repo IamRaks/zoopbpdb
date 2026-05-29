@@ -4007,17 +4007,16 @@ const DataIntegrity = {
       const localTs = await DB.get('config','summaryLastUpdated') || 0;
       const fileIds = Cfg.get('summaryFileIds') || {};
 
-      // Public fetch using API key — works for publicly shared Drive files
       const apiKey = Cfg.get('gApiKey') || '';
       const fetchPublic = async (fileId) => {
-        if (!fileId) return null;
-        if (!apiKey) return null; // no API key — can't fetch publicly
+        if (!fileId || !apiKey) return null;
         try {
-          const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}`;
-          const r = await fetch(url);
+          // Unauthenticated public request — API key as URL param, no Authorization header
+          const r = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${apiKey}`
+          );
           if (!r.ok) return null;
-          const text = await r.text();
-          return text.trim().startsWith('{') ? JSON.parse(text) : null;
+          return await r.json();
         } catch(e) { return null; }
       };
 
@@ -6511,29 +6510,23 @@ const App = {
       AppLog.add('Summary', 'Fetching BP_SUMMARY_RECENT.json publicly', 'RUN', summaryIds.recent);
       try {
         const apiKey = Cfg.get('gApiKey') || '';
-        // googleapis.com with API key works for public files without CORS issues
-        // drive.google.com/uc is blocked by CORS from GitHub Pages
         const urls = apiKey
           ? [`https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=${apiKey}`]
-          : [`https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=`];
+          : [];
 
         let chunk = null;
         for (const url of urls) {
           try {
-            AppLog.add('Summary', 'Trying URL', 'RUN', url.replace(apiKey, apiKey ? 'AIza...' : '(no key)'));
+            AppLog.add('Summary', 'Trying URL', 'RUN', url.replace(apiKey, 'AIza...'));
+            // Unauthenticated public request — API key as URL param only, no Authorization header
             const r = await fetch(url);
             AppLog.add('Summary', 'HTTP response', r.ok ? 'OK' : 'WARN',
-              'Status: ' + r.status + (r.ok ? '' : apiKey ? ' — check API key' : ' — no API key configured'));
+              'Status: ' + r.status + (r.ok ? '' : apiKey ? ' — check API key / file sharing' : ' — no API key configured'));
             if (!r.ok) continue;
-            const text = await r.text();
-            if (text.trim().startsWith('{')) {
-              chunk = JSON.parse(text);
-              AppLog.add('Summary', 'JSON parsed successfully', 'OK',
-                'Dates: ' + Object.keys(chunk.dates||{}).length);
-              break;
-            } else {
-              AppLog.add('Summary', 'Response is not JSON', 'WARN', text.substring(0,80));
-            }
+            chunk = await r.json();
+            AppLog.add('Summary', 'JSON parsed successfully', 'OK',
+              'Dates: ' + Object.keys(chunk.dates||{}).length);
+            break;
           } catch(e) {
             AppLog.add('Summary', 'Fetch error', 'ERR', e.message);
             continue;
@@ -6546,12 +6539,11 @@ const App = {
           this.showLanding('Preparing dashboard...', 60);
           // Download history in background
           if (summaryIds.history) {
-            const histUrl = `https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media&key=${apiKey}`;
-            fetch(histUrl).then(r2 => r2.ok ? r2.text() : null).then(t => {
-              if (t?.trim().startsWith('{')) {
-                ChartStore.mergeChunk(zone, JSON.parse(t)).then(() => DataIntegrity._refreshVisibleChart());
-              }
-            }).catch(() => {});
+            // Unauthenticated public request — no Authorization header
+            fetch(`https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media&key=${apiKey}`)
+              .then(r2 => r2.ok ? r2.json() : null)
+              .then(h => h ? ChartStore.mergeChunk(zone, h).then(() => DataIntegrity._refreshVisibleChart()) : null)
+              .catch(() => {});
           }
         }
       } catch(e) { AppLog.add('Summary', 'Public fetch exception', 'ERR', e.message); }
