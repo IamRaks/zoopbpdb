@@ -1504,7 +1504,11 @@ const Cfg = {
       {id:'weekend_pct',  type:'pct',   periodKey:'weekend',  enabled:false},
     ],
     sheets:{}, paramOrder:[], derivedParams:[],
-    summaryFileIds:{ meta:null, recent:null, history:null }
+    summaryFileIds:{ meta:null, recent:null, history:null },
+    // Sheet IDs for converted XLSX files — keyed by dateStr
+    // Survives browser data clear via config.json on GitHub
+    // Each entry: { bpSheetId, bpConvertedVersion, rdSheetId, rdConvertedVersion }
+    fileIndexSheetIds:{}
   },
   d:{},
   async load(){
@@ -1862,6 +1866,32 @@ const ConfigSync = {
         if (pat) await DB.set('config', 'ghPat', pat);
         delete cfg._ghPat; // don't store raw PAT in Cfg.d
       }
+      // Restore sheet IDs to fileIndex — prevents reconversion after data clear
+      const sheetIds = cfg.fileIndexSheetIds || {};
+      for (const [dk, ids] of Object.entries(sheetIds)) {
+        try {
+          const existing = await DB.get('fileIndex', dk) || {};
+          let changed = false;
+          if (ids.bpSheetId && !existing.bpConverted) {
+            existing.bpSheetId = ids.bpSheetId;
+            existing.bpConverted = true;
+            existing.bpStale = false;
+            if (ids.bpConvertedVersion) existing.bpVersion = ids.bpConvertedVersion;
+            changed = true;
+          }
+          if (ids.rdSheetId && !existing.rdConverted) {
+            existing.rdSheetId = ids.rdSheetId;
+            existing.rdConverted = true;
+            existing.rdStale = false;
+            if (ids.rdConvertedVersion) existing.rdVersion = ids.rdConvertedVersion;
+            changed = true;
+          }
+          if (changed) await DB.set('fileIndex', dk, existing);
+        } catch(e) { /* non-fatal per entry */ }
+      }
+      if (Object.keys(sheetIds).length)
+        AppLog.add('Drive API', `Restored ${Object.keys(sheetIds).length} sheet IDs from config`, 'OK',
+          'fileIndex restored — no reconversion needed');
       // Only update if remote config is newer than local
       const localTime = (await DB.get('config', 'lastConfigPush')) || '';
       const remoteTime = cfg._savedAt || '';
@@ -2318,6 +2348,19 @@ const XLSXConverter = {
           if (type === 'bp') { updated.bpSheetId = sheetId; updated.bpConverted = true; updated.bpStale = false; }
           else               { updated.rdSheetId = sheetId; updated.rdConverted = true; updated.rdStale = false; }
           await DB.set('fileIndex', dk, updated);
+
+          // Persist sheet ID to config so it survives browser data clear
+          const ids = Cfg.get('fileIndexSheetIds') || {};
+          if (!ids[dk]) ids[dk] = {};
+          if (type === 'bp') {
+            ids[dk].bpSheetId = sheetId;
+            ids[dk].bpConvertedVersion = updated.bpVersion || updated.bpModifiedTime || '';
+          } else {
+            ids[dk].rdSheetId = sheetId;
+            ids[dk].rdConvertedVersion = updated.rdVersion || updated.rdModifiedTime || '';
+          }
+          Cfg.set('fileIndexSheetIds', ids);
+
           AppLog.add('Drive API',
             alreadyHadIt ? `Reconversion complete — ${name}` : `Conversion complete — ${name}`,
             'OK', `sheetId=${sheetId.substring(0,12)}`);
@@ -2329,6 +2372,15 @@ const XLSXConverter = {
         // Small pause between conversions to avoid Drive API quota
         if (i < toConvert.length - 1)
           await new Promise(r => setTimeout(r, 300));
+      }
+
+      // If any conversions happened, persist sheet IDs to config.json on GitHub
+      // This prevents reconversion after browser data clear
+      if (converted > 0 || skipped > 0) {
+        await Cfg.save();
+        ConfigSync.push(true).catch(() => {}); // fire-and-forget — non-blocking
+        AppLog.add('Drive API', 'Sheet IDs saved to config.json', 'OK',
+          `${Object.keys(Cfg.get('fileIndexSheetIds')||{}).length} dates stored`);
       }
 
       return { converted, skipped, failed };
@@ -2751,6 +2803,11 @@ const GDrive = {
         if (xlsxChanged)
           AppLog.add('Drive API', `BP file ID changed — ${f.name}`, 'WARN',
             `prev=${(ex.bpXlsxId||'').substring(0,12)} new=${f.id.substring(0,12)} — reconverting`);
+        // Clear stale sheet ID from persistent config so reconversion is triggered after data clear too
+        if (versionChanged || xlsxChanged) {
+          const ids = Cfg.get('fileIndexSheetIds') || {};
+          if (ids[dk]) { delete ids[dk].bpSheetId; delete ids[dk].bpConvertedVersion; Cfg.set('fileIndexSheetIds', ids); }
+        }
         await DB.set('fileIndex',dk,{...ex,
           bpXlsxId: isXlsx ? f.id : (ex.bpXlsxId || null),
           bpSheetId: isSheet ? f.id : (ex.bpSheetId || null),
@@ -2776,6 +2833,10 @@ const GDrive = {
         if (xlsxChanged)
           AppLog.add('Drive API', `RD file ID changed — ${f.name}`, 'WARN',
             `prev=${(ex.rdXlsxId||'').substring(0,12)} new=${f.id.substring(0,12)} — reconverting`);
+        if (versionChanged || xlsxChanged) {
+          const ids = Cfg.get('fileIndexSheetIds') || {};
+          if (ids[dk]) { delete ids[dk].rdSheetId; delete ids[dk].rdConvertedVersion; Cfg.set('fileIndexSheetIds', ids); }
+        }
         await DB.set('fileIndex',dk,{...ex,
           rdXlsxId: isXlsx ? f.id : (ex.rdXlsxId || null),
           rdSheetId: isSheet ? f.id : (ex.rdSheetId || null),
