@@ -2891,6 +2891,49 @@ const DE = {
     // This ensures BP and RD are always from the same day even when BP falls back
     const rdDateStr=bpF?bpF.actual:dateStr;
     const rdF=await this.getRD(rdDateStr);
+
+    // ── chartData (summary) fallback ─────────────────────────────────────────
+    // When no local BP files are available (new user / no OAuth), use pre-aggregated
+    // summary data from chartData for zone and region scopes.
+    if (!bpF) {
+      const zone=Cfg.get('activeZone');
+      if (zone && (scope.type==='zone' || scope.type==='region')) {
+        const scopeKey = scope.type==='zone' ? '__zone__' : scope.region;
+        const store = await ChartStore._getStore(zone);
+        const datesToTry = [dateStr];
+        if (fallback) {
+          const sorted = await ChartStore.getSortedDates(zone);
+          sorted.filter(d=>d<dateStr).slice(0,10).forEach(d=>datesToTry.push(d));
+        }
+        for (const td of datesToTry) {
+          const entry = store?.dates?.[td]?.[scopeKey];
+          if (entry && Object.keys(entry).length > 0) {
+            const values = { ...entry };
+            // Compute any derived params not already stored in summary
+            for (const dp of (Cfg.get('derivedParams')||[])) {
+              const dk = `__d__::${dp.name}`;
+              if (!(dk in values)) {
+                try {
+                  let val=null; let valid=true;
+                  for (const tok of dp.tokens) {
+                    const key=`${tok.sheet}::${tok.col}`;
+                    if(!(key in values)){valid=false;break;}
+                    const tv=values[key]??0;
+                    val=val===null?tv:(tok.op==='+'?val+tv:val-tv);
+                  }
+                  values[dk]=valid?val:null;
+                } catch(e){}
+              }
+            }
+            const result={values,actual:td,isFB:td!==dateStr,rdMissing:false,bpMissing:false};
+            this._cache[ck]=result;
+            return result;
+          }
+        }
+      }
+    }
+    // ── end chartData fallback ───────────────────────────────────────────────
+
     const sc=Cfg.get('sheets')||{};
     const values={};
     if(bpF){
@@ -2943,7 +2986,30 @@ const DE = {
   },
   async getAllRegions(dateStr,zone,fallback){
     const bpF=await this.getBP(dateStr,fallback);
-    if(!bpF)return null;
+    if(!bpF){
+      // ── chartData fallback: derive regions from summary scopeKeys ──────────
+      const store = await ChartStore._getStore(zone);
+      const datesToTry = [dateStr];
+      if (fallback) {
+        const sorted = await ChartStore.getSortedDates(zone);
+        sorted.filter(d=>d<dateStr).slice(0,10).forEach(d=>datesToTry.push(d));
+      }
+      for (const td of datesToTry) {
+        const entry = store?.dates?.[td];
+        if (!entry) continue;
+        const regionKeys = Object.keys(entry).filter(k=>k!=='__zone__');
+        if (!regionKeys.length) continue;
+        const regions = regionKeys.sort((a,b)=>{
+          if(a==='__ZO__')return -1; if(b==='__ZO__')return 1; return a.localeCompare(b);
+        });
+        const data={};
+        for(const region of regions)
+          data[region]=await this.getAgg(td,{type:'region',zone,region},false);
+        return{regions,data,actual:td,isFB:td!==dateStr};
+      }
+      return null;
+      // ── end chartData fallback ─────────────────────────────────────────────
+    }
     const fs=Object.values(bpF.data.sheets)[0];if(!fs)return null;
     const rset=new Set();
     fs.rows.filter(r=>r['ZO']===zone).forEach(r=>rset.add(r['RO']==='-'?'__ZO__':r['RO']));
@@ -3096,7 +3162,11 @@ const PeriodPicker = {
     // Close any open dropdown first
     this.closeAll();
 
-    const allDates = await FM.availDates('bp');
+    const allDates_local = await FM.availDates('bp');
+    // For new users (no local files), fall back to dates from chartData summary
+    const allDates = allDates_local.length
+      ? allDates_local
+      : await ChartStore.getSortedDates(Cfg.get('activeZone')||'');
     const latestStr = Dashboard.state.periodDates['latest'];
     if (!latestStr) return;
 
@@ -3273,6 +3343,11 @@ const Dashboard = {
       // Use Drive FileIndex dates as fallback
       const indexed = await DB.keys('fileIndex');
       dates = indexed.sort().reverse();
+    }
+    if (!dates.length) {
+      // Final fallback: derive dates from chartData summary (new users with no local files)
+      const zone2 = Cfg.get('activeZone');
+      if (zone2) dates = await ChartStore.getSortedDates(zone2);
     }
     if (!dates.length) return;
     const holSats=Cfg.get('holidaySats')||[2,4];
