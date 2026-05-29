@@ -1437,6 +1437,8 @@ const Cfg = {
     bpFolderName:'', rdFolderName:'', fallback:true,
     dataSource:'drive', gClientId:'', gBpFolderId:'', gRdFolderId:'', gApiKey:'',
     adminPasswordHash:'', adminEmail:'',
+    // GitHub sync — included in D so they survive even if autoLoad fails
+    ghUsername:'', ghRepo:'',
     ejsServiceId:'service_8x5yn04', ejsTemplateId:'template_l8mbtk9', ejsPublicKey:'IaT9mZNSS_294Z_J6',
     adminResetToken:'', adminResetExpiry:0,
     activeZone:'', displayUnit:'lacs', theme:'dark',
@@ -1478,12 +1480,20 @@ const Cfg = {
     const s=await DB.get('config','main');
     this.d=s?this._merge(this.D,s):JSON.parse(JSON.stringify(this.D));
   },
-  _merge(def,stored){
-    const out=JSON.parse(JSON.stringify(def));
-    Object.assign(out,stored);
-    out.periods={};
-    for(const k in def.periods) out.periods[k]=Object.assign({},def.periods[k],(stored.periods||{})[k]||{});
-    if(!out.columnOrder||!out.columnOrder.length) out.columnOrder=JSON.parse(JSON.stringify(def.columnOrder));
+  _merge(def, stored) {
+    const out = JSON.parse(JSON.stringify(def));
+    Object.assign(out, stored);
+    out.periods = {};
+    for (const k in def.periods)
+      out.periods[k] = Object.assign({}, def.periods[k], (stored.periods||{})[k]||{});
+    if (!out.columnOrder || !out.columnOrder.length)
+      out.columnOrder = JSON.parse(JSON.stringify(def.columnOrder));
+    // Safeguard: critical keys must never be blanked by a partial/corrupt stored config.
+    // If Object.assign overwrote a good stored value with an empty default, restore it.
+    const critical = ['ghUsername','ghRepo','activeZone','gClientId','gBpFolderId','gRdFolderId','gApiKey'];
+    for (const k of critical) {
+      if (!out[k] && stored[k]) out[k] = stored[k];
+    }
     return out;
   },
   async save(){
@@ -1661,10 +1671,25 @@ const ConfigSync = {
     const repo = Cfg.get('ghRepo') || '';
     const pat = await this.getPat();
 
-    if (!user || !repo || !pat) {
+    // ── Req 2: Auto-rehydrate if Cfg.d lost credentials (e.g. partial data clear) ──
+    // Re-read directly from IndexedDB in case Cfg.d wasn't fully restored by autoLoad
+    let rehydratedUser = user, rehydratedRepo = repo;
+    if (!user || !repo) {
+      try {
+        const raw = await DB.get('config', 'main');
+        if (raw?.ghUsername) rehydratedUser = raw.ghUsername;
+        if (raw?.ghRepo)     rehydratedRepo = raw.ghRepo;
+        if (rehydratedUser && !user) Cfg.set('ghUsername', rehydratedUser);
+        if (rehydratedRepo && !repo) Cfg.set('ghRepo', rehydratedRepo);
+      } catch(e) { /* non-fatal */ }
+    }
+
+    if (!rehydratedUser || !rehydratedRepo || !pat) {
       const msg = '✗ Fill in GitHub username, repo name and PAT first.';
       setBar(msg);
-      if (!silent) AppLog.add('GitHub', 'Config push skipped — credentials missing', 'WARN');
+      // Always log this — credentials missing should never be silent
+      AppLog.add('GitHub', 'Config push skipped — credentials missing', 'WARN',
+        `user=${rehydratedUser||'MISSING'} repo=${rehydratedRepo||'MISSING'} pat=${pat?'OK':'MISSING'}`);
       return false;
     }
 
@@ -1675,7 +1700,7 @@ const ConfigSync = {
       let sha = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const check = await fetch(this._apiUrl(user, repo), {
+          const check = await fetch(this._apiUrl(rehydratedUser, rehydratedRepo), {
             headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' }
           });
           if (check.ok) { sha = (await check.json()).sha; break; }
@@ -1694,7 +1719,7 @@ const ConfigSync = {
         ...(sha ? { sha } : {})
       };
 
-      let resp = await fetch(this._apiUrl(user, repo), {
+      let resp = await fetch(this._apiUrl(rehydratedUser, rehydratedRepo), {
         method: 'PUT',
         headers: {
           Authorization: `token ${pat}`,
@@ -1707,13 +1732,13 @@ const ConfigSync = {
       // 409 conflict = SHA stale — refetch SHA and retry once
       if (resp.status === 409) {
         AppLog.add('GitHub', 'Config push — SHA conflict, retrying', 'WARN');
-        const recheck = await fetch(this._apiUrl(user, repo), {
+        const recheck = await fetch(this._apiUrl(rehydratedUser, rehydratedRepo), {
           headers: { Authorization: `token ${pat}`, Accept: 'application/vnd.github.v3+json' }
         });
         if (recheck.ok) {
           const freshSha = (await recheck.json()).sha;
           body.sha = freshSha;
-          resp = await fetch(this._apiUrl(user, repo), {
+          resp = await fetch(this._apiUrl(rehydratedUser, rehydratedRepo), {
             method: 'PUT',
             headers: {
               Authorization: `token ${pat}`,
@@ -1764,7 +1789,7 @@ const ConfigSync = {
     }
 
     try {
-      const resp = await fetch(this._apiUrl(user, repo), {
+      const resp = await fetch(this._apiUrl(rehydratedUser, rehydratedRepo), {
         headers: {
           Authorization: pat ? `token ${pat}` : '',
           Accept: 'application/vnd.github.v3+json'
