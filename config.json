@@ -6,6 +6,7 @@
   "gClientId": "__obf__eH5xen9/fnF7f31/ZH15OSV5JjsiITwqJyo7enkgPX44LiEgIXpxPCw4PT8mZyg5OTpnLiYmLiUsPDosOyomJz0sJz1nKiYk",
   "gBpFolderId": "__obf__eCUCeXw8f386LjkEOgY/BBMEEyUnfiMYfzMuPQ9wAwIf",
   "gRdFolderId": "__obf__eC4jHi0gMw8lBwIqByExKydxZBweAyUjLX8uOjFkOiIa",
+  "gApiKey": "__obf__CAAzKBowCgsTBSIRPAR4GzAHZAQaFg8YORgTAn44K3gbfw19JBE6",
   "adminPasswordHash": "3a87afdcae32a375c6b4416e5a356801fc6da87bab110c5760c045819cae93c1",
   "adminEmail": "zoopekm.proposals@gmail.com",
   "ejsServiceId": "service_8x5yn04",
@@ -473,5 +474,5 @@
   },
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
-  "_savedAt": "2026-05-28T19:41:23.283Z"
+  "_savedAt": "2026-05-29T07:26:19.754Z"
 }
