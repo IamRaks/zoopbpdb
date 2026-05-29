@@ -1972,10 +1972,14 @@ const ChartStore = {
     // These are needed for the dashboard table (FY End, Month End, Qtr End, Prev Day)
     const now = new Date();
     const mustInclude = new Set([
-      DL.toYMD(DL.fyEnd(now)),         // FY End (31-Mar)
+      DL.toYMD(DL.fyEnd(now)),         // FY End (31-Mar current/last FY)
       DL.toYMD(DL.monthEnd(now)),       // Previous month end
       DL.toYMD(DL.qtrEnd(now)),         // Previous quarter end
     ].filter(Boolean));
+
+    // Pin ALL FY End dates present in the data (any -03-31 date)
+    // This ensures cross-year period comparisons always work regardless of cutoff age
+    allDates.filter(d => d.endsWith('-03-31')).forEach(d => mustInclude.add(d));
 
     // Also include any dates stored in Dashboard.state.periodDates
     const dpd = (typeof Dashboard !== 'undefined' && Dashboard.state?.periodDates) || {};
@@ -4251,11 +4255,20 @@ const DataIntegrity = {
 
       // Fetch HISTORY in background (non-blocking)
       const fetchHistory = async () => {
+        if (!fileIds.history) return; // no history file saved — skip
         let history = await fetchPublic(fileIds.history);
         if (!history && token) history = await fetchAuth(SummaryMgr.FILES.history, fileIds.history);
         if (history) {
+          const fyeDate = Dashboard.state?.periodDates?.['fye'];
+          const hadFye = fyeDate ? !!(await ChartStore._getStore(zone))?.dates?.[fyeDate]?.['__zone__'] : true;
           const added = await ChartStore.mergeChunk(zone, history);
-          if (added > 0) this._refreshVisibleChart();
+          if (added > 0) {
+            this._refreshVisibleChart();
+            // If FY End data was missing before (was in HISTORY chunk), re-render table
+            if (!hadFye) {
+              await Dashboard.refreshAll();
+            }
+          }
         }
       };
       fetchHistory().catch(()=>{});
