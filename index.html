@@ -2661,17 +2661,20 @@ const GDrive = {
     if (this.token && Date.now() < this.tokenExpiry - 60000) return this.token;
 
     // 2. Try restoring persisted token from IndexedDB (avoids Google page flash)
-    if (!interactive) {
-      try {
-        const saved = await DB.get('config', 'gdriveToken');
-        if (saved && saved.token && saved.expiry && Date.now() < saved.expiry - 60000) {
-          this.token = saved.token;
-          this.tokenExpiry = saved.expiry;
-          this._updateUI(true);
-          return this.token;
-        }
-      } catch(e) { /* no saved token */ }
-    }
+    try {
+      const saved = await DB.get('config', 'gdriveToken');
+      if (saved && saved.token && saved.expiry && Date.now() < saved.expiry - 60000) {
+        this.token = saved.token;
+        this.tokenExpiry = saved.expiry;
+        this._updateUI(true);
+        return this.token;
+      }
+    } catch(e) { /* no saved token */ }
+
+    // 3. No cached token — if not interactive, bail immediately without loading GIS.
+    //    Loading GIS and calling requestAccessToken({prompt:'none'}) causes a visible
+    //    redirect flash to accounts.google.com on mobile, causing the refresh loop.
+    if (!interactive) throw new Error('no_cached_token');
 
     const clientId = Cfg.get('gClientId');
     if (!clientId) throw new Error('No Client ID configured');
@@ -4021,17 +4024,17 @@ const Dashboard = {
   },
 
   async calcPeriodDates(){
-    // Try local bpFiles first, fall back to FileIndex (Drive sheets)
+    // Try local bpFiles first, fall back to ChartStore, then FileIndex
     let dates = await FM.availDates('bp');
     if (!dates.length) {
-      // Use Drive FileIndex dates as fallback
-      const indexed = await DB.keys('fileIndex');
-      dates = indexed.sort().reverse();
-    }
-    if (!dates.length) {
-      // Final fallback: derive dates from chartData summary (new users with no local files)
+      // Use ChartStore dates next — these have actual summary data ready to display
       const zone2 = Cfg.get('activeZone');
       if (zone2) dates = (await ChartStore.getSortedDates(zone2)).reverse(); // descending — latest first
+    }
+    if (!dates.length) {
+      // Final fallback: Drive FileIndex — has Sheet IDs but needs a token to fetch data
+      const indexed = await DB.keys('fileIndex');
+      dates = indexed.sort().reverse();
     }
     if (!dates.length) return;
     const holSats=Cfg.get('holidaySats')||[2,4];
