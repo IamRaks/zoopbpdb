@@ -4112,6 +4112,16 @@ const Dashboard = {
     if(this.state.branch)await this.renderBranch(this.state.branch);
   },
 
+  // Full refresh — recalculates period dates, repopulates region dropdowns, re-renders all.
+  // Call this after background data rebuild or admin panel close to reflect new data.
+  async fullRefresh(){
+    DE.clearCache();
+    await this.calcPeriodDates();
+    await this.populateRegionDropdowns();
+    this.renderPeriodBar();
+    await this.refreshAll();
+  },
+
   getParamDefs(){
     const defs=[];
     const sc=Cfg.get('sheets')||{};
@@ -4818,6 +4828,10 @@ const DataIntegrity = {
 
       // Step 5: Push updated summary to Drive (admin device only)
       await this._pushIfPossible(zone);
+
+      // Step 6: Refresh dashboard to reflect newly built data
+      // (period dates, region dropdowns, and all table/chart values may have changed)
+      await Dashboard.fullRefresh().catch(() => {});
 
       this._setStatus('live', '● Live');
     } catch(e) {
@@ -5799,9 +5813,9 @@ const Admin = {
       });
       return;
     }
-    // Normal close — refresh dashboard to reflect config changes
+    // Normal close — full refresh so period dates and region dropdowns reflect latest data
     if (zone && Dashboard.state.periodDates?.latest) {
-      Dashboard.refreshAll().catch(() => {});
+      Dashboard.fullRefresh().catch(() => {});
     }
   },
   loadUI(){this.loadDSUI();this.loadZoneUI();this.loadPeriodsUI();this.loadHolidaysUI();this.loadSheetsUI();this.loadDerivedUI();this.loadParamOrderUI();this.loadSecurityUI();},
