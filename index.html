@@ -3741,8 +3741,18 @@ const DE = {
     return rdRegion===this.bpRegionName(bpRO);
   },
   filterBP(rows,scope){
-    let r=rows.filter(x=>x['ZO']===scope.zone);
-    if(scope.type==='region'){const rk=scope.region==='__ZO__'?'-':scope.region;r=r.filter(x=>x['RO']===rk);}
+    const norm = v => (v||'').split('-').map(p=>p.trim()).filter(Boolean).join('-');
+    const trimZ = v => (v||'').trim();
+    let r=rows.filter(x=>trimZ(x['ZO'])===trimZ(scope.zone));
+    if(scope.type==='region'){
+      if(scope.region==='__ZO__'){
+        // __ZO__ = rows where RO is blank, '-', or doesn't match any known region
+        const knownRegions = Cfg.get('activeZoneRegions') || [];
+        r=r.filter(x=>{ const ro=norm(x['RO']||''); return !ro||ro==='-'||(!knownRegions.includes(ro)&&ro!=='-'); });
+      } else {
+        r=r.filter(x=>norm(x['RO'])===norm(scope.region));
+      }
+    }
     else if(scope.type==='branch'){r=r.filter(x=>x['BRANCH']===scope.branchKey);}
     return r;
   },
@@ -3915,10 +3925,13 @@ const DE = {
     // known region) is treated as a data anomaly — rows roll up into __ZO__.
     const knownRegions = Cfg.get('activeZoneRegions') || null;
     const anomalies = new Set();
-    fs.rows.filter(r=>r['ZO']===zone).forEach(r => {
-      const ro = r['RO'];
-      if (!ro || ro === '-') { rset.add('__ZO__'); return; }
-      // If a whitelist of known regions exists, use it
+    // Normalise helper — trim spaces around hyphens and outer whitespace
+    const norm = ro => ro ? ro.split('-').map(p => p.trim()).filter(Boolean).join('-') : '';
+    fs.rows.filter(r => (r['ZO']||'').trim() === zone.trim()).forEach(r => {
+      const roRaw = r['RO'];
+      if (!roRaw || roRaw.trim() === '-' || roRaw.trim() === '') { rset.add('__ZO__'); return; }
+      const ro = norm(roRaw); // normalise before any comparison
+      // If a whitelist of known regions exists, use it (whitelist is already normalised)
       if (knownRegions && knownRegions.length) {
         if (knownRegions.includes(ro)) { rset.add(ro); }
         else { anomalies.add(ro); rset.add('__ZO__'); } // treat as under-ZO
@@ -3929,7 +3942,7 @@ const DE = {
       // Check: if the same value appears in the BRANCH column of ANY row
       // for this zone, it's a branch code appearing in the wrong column
       const appearsAsBranch = fs.rows.some(r2 =>
-        r2['ZO'] === zone && r2['BRANCH'] === ro
+        (r2['ZO']||'').trim() === zone.trim() && norm(r2['BRANCH']||'') === ro
       );
       if (appearsAsBranch) {
         anomalies.add(ro);
@@ -4567,36 +4580,49 @@ const Dashboard = {
       dates=indexed.sort().reverse();
     }
 
-    // ── chartData fallback for region list ────────────────────────────────
-    if (!dates.length) {
-      // Derive region list directly from chartData scope keys (new user / no OAuth)
+    const norm = v => (v||'').split('-').map(p=>p.trim()).filter(Boolean).join('-');
+
+    // ── ChartStore fallback — always try this first for region list ──────────
+    // More reliable than reading a single BP sheet which may have formatting issues.
+    // Works for all users including those without OAuth token.
+    {
       const store = await ChartStore._getStore(zone);
       const allScopeKeys = new Set();
-      Object.values(store.dates||{}).forEach(e => Object.keys(e).forEach(k => allScopeKeys.add(k)));
+      Object.values(store?.dates||{}).forEach(e => Object.keys(e).forEach(k => allScopeKeys.add(k)));
       const regions = [...allScopeKeys]
         .filter(k => k !== '__zone__')
         .sort((a,b)=>{ if(a==='__ZO__')return -1; if(b==='__ZO__')return 1; return a.localeCompare(b); });
-      if (!regions.length) return;
-      const mkOpts2=(sel,extra)=>{ let h=extra; regions.forEach(r=>{ const lbl=r==='__ZO__'?'UNDER ZO':r; h+=`<option value="${r}">${lbl}</option>`; }); sel.innerHTML=h; };
-      mkOpts2(document.getElementById('regionSel'),'<option value="">— Select Region —</option>');
-      mkOpts2(document.getElementById('branchRegion'),'<option value="">All Regions</option>');
-      if(this.state.region)document.getElementById('regionSel').value=this.state.region;
-      return;
+      if (regions.length) {
+        const mkOpts2=(sel,extra)=>{ let h=extra; regions.forEach(r=>{ const lbl=r==='__ZO__'?'UNDER ZO':r.split('-').slice(1).join('-')||r; h+=`<option value="${r}">${lbl}</option>`; }); sel.innerHTML=h; };
+        mkOpts2(document.getElementById('regionSel'),'<option value="">— Select Region —</option>');
+        mkOpts2(document.getElementById('branchRegion'),'<option value="">All Regions</option>');
+        if(this.state.region)document.getElementById('regionSel').value=this.state.region;
+        return;
+      }
     }
-    // ── end chartData fallback ─────────────────────────────────────────────
+    // ── end ChartStore fallback ────────────────────────────────────────────
+
+    if (!dates.length) return;
 
     // Try local bpFiles first, then Sheets API
     let fd=await DB.get('bpFiles',dates[0]);
     if(!fd){
-      const entry=await DB.get('fileIndex',dates[0]);
-      if(entry&&entry.bpSheetId){
-        fd=await SheetsAPI.buildBPFromSheet(entry.bpSheetId,dates[0],zone).catch(()=>null);
+      // Try multiple dates — the latest might have incomplete RO data
+      for (const dk of dates.slice(0,5)) {
+        const entry=await DB.get('fileIndex',dk);
+        if(entry&&entry.bpSheetId){
+          fd=await SheetsAPI.buildBPFromSheet(entry.bpSheetId,dk,zone).catch(()=>null);
+          if(fd && Object.keys(fd.sheets||{}).length) break;
+        }
       }
     }
     if(!fd)return;
     const fs=Object.values(fd.sheets)[0];if(!fs)return;
     const rset=new Set();
-    fs.rows.filter(r=>r['ZO']===zone).forEach(r=>rset.add(r['RO']==='-'?'__ZO__':r['RO']));
+    fs.rows.filter(r=>(r['ZO']||'').trim()===zone.trim()).forEach(r=>{
+      const ro=norm(r['RO']||'');
+      rset.add(!ro||ro==='-'?'__ZO__':ro);
+    });
     const regions=[...rset].sort((a,b)=>{if(a==='__ZO__')return -1;if(b==='__ZO__')return 1;return a.localeCompare(b);});
     const mkOpts=(sel,extra)=>{
       let h=extra;
@@ -5418,10 +5444,13 @@ const DataIntegrity = {
         }
         // Auto-update the known region whitelist from the first date that has regions
         // This is used by getAllRegions Layer 2 validation on subsequent reads
-        const validRegions = allRegions.regions.filter(r => r !== '__ZO__');
+        const normRO = ro => ro ? ro.split('-').map(p => p.trim()).filter(Boolean).join('-') : '';
+        const validRegions = allRegions.regions
+          .filter(r => r !== '__ZO__')
+          .map(r => normRO(r)); // normalise before storing in whitelist
         if (validRegions.length > 0) {
           const existing = Cfg.get('activeZoneRegions') || [];
-          const merged = [...new Set([...existing, ...validRegions])].sort();
+          const merged = [...new Set([...existing.map(normRO), ...validRegions])].sort();
           if (merged.length !== existing.length ||
               merged.some((r,i) => r !== existing[i])) {
             Cfg.set('activeZoneRegions', merged);
@@ -5650,6 +5679,14 @@ const DataIntegrity = {
     try {
       log('', 'App', 'Starting Force Rebuild', 'RUN', `Zone: ${zone}`);
       setProgress(5, 'Starting...');
+
+      // ── Reset stale schema references and region whitelist ────────
+      // These will be rebuilt fresh with normalised values during this run.
+      // Stale values would cause RO matching failures on files with spacing variations.
+      Cfg.set('activeZoneRegions', []);
+      Cfg.set('bpSchema', null);
+      Cfg.set('rdSchema', null);
+      log('', 'App', 'Schema references cleared — will rebuild from source files', 'OK', '');
 
       // ── Step 0: Check GitHub PAT is available ─────────────────
       const pat = await ConfigSync.getPat();
