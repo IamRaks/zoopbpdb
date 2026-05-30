@@ -11,7 +11,14 @@
   "adminEmail": "zoopekm.proposals@gmail.com",
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
-  "activeZoneRegions": [],
+  "activeZoneRegions": [
+    "35130-ERNAKULAM",
+    "36750-THIRUVANANTHAPURAM",
+    "56140-KOZHIKODE",
+    "67280-KOTTAYAM",
+    "78480-THRISSUR",
+    "78490-KOLLAM"
+  ],
   "ejsServiceId": "service_8x5yn04",
   "ejsTemplateId": "template_l8mbtk9",
   "ejsPublicKey": "IaT9mZNSS_294Z_J6",
@@ -537,6 +544,6 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-05-30T05:46:03.889Z",
+  "_savedAt": "2026-05-30T05:46:58.734Z",
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
