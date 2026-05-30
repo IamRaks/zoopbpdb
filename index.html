@@ -2836,14 +2836,15 @@ const GDrive = {
   },
 
   // Prioritise dates needed for dashboard, then sync rest in background
-  async syncNow() {
+  async syncNow(silent = false) {
     const bpId = Cfg.get('gBpFolderId');
     const rdId = Cfg.get('gRdFolderId');
-    if (!bpId && !rdId) { alert('Enter at least one folder ID first.'); return; }
+    if (!bpId && !rdId) { if (!silent) alert('Enter at least one folder ID first.'); return; }
 
-    // Ensure token
+    // Ensure token — in silent mode never trigger interactive sign-in
     try { await this.getToken(false); }
     catch(e) {
+      if (silent) return; // background sync: abort silently, never show Google sign-in page
       try { await this.getToken(true); }
       catch(e2) { this._setSyncBar('Sign in to Google Drive first.'); return; }
     }
@@ -7959,7 +7960,7 @@ const App = {
         return;
       }
       AppLog.add('OAuth', 'Valid cached token found — running background sync', 'OK');
-      await GDrive.syncNow();
+      await GDrive.syncNow(true); // silent — background sync, never trigger interactive auth
       AppLog.add('Drive API', 'syncNow complete', 'OK');
       let waitCount = 0;
       while (XLSXConverter._converting && waitCount < 30) {
