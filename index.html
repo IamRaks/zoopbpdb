@@ -5688,6 +5688,13 @@ const DataIntegrity = {
       Cfg.set('rdSchema', null);
       log('', 'App', 'Schema references cleared — will rebuild from source files', 'OK', '');
 
+      // ── Clear ChartStore for this zone ───────────────────────────
+      // Stale scope data (e.g. incomplete dates from previous broken builds)
+      // can persist in IndexedDB even after a rebuild if the incoming summary
+      // only partially overwrites. Full clear ensures a clean slate.
+      await ChartStore._setStore(zone, { dates: {}, lastUpdated: new Date().toISOString() });
+      log('', 'App', 'ChartStore cleared — clean rebuild', 'OK', `Zone: ${zone}`);
+
       // ── Step 0: Check GitHub PAT is available ─────────────────
       const pat = await ConfigSync.getPat();
       if (!pat) {
@@ -8141,8 +8148,9 @@ const App = {
       AppLog.add('Summary', 'Fetching BP_SUMMARY_RECENT.json publicly', 'RUN', summaryIds.recent);
       try {
         const apiKey = Cfg.get('gApiKey') || '';
+        const cacheBust = Date.now();
         const urls = apiKey
-          ? [`https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=${apiKey}`]
+          ? [`https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=${apiKey}&t=${cacheBust}`]
           : [];
 
         let chunk = null;
@@ -8172,7 +8180,7 @@ const App = {
           // Download history in background
           if (summaryIds.history) {
             // Unauthenticated public request — no Authorization header
-            fetch(`https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media&key=${apiKey}`)
+            fetch(`https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media&key=${apiKey}&t=${Date.now()}`)
               .then(r2 => r2.ok ? r2.json() : null)
               .then(h => h ? ChartStore.mergeChunk(zone, h).then(() => DataIntegrity._refreshVisibleChart()) : null)
               .catch(() => {});
