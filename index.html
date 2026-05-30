@@ -1475,6 +1475,9 @@ const Cfg = {
     adminPasswordHash:'', adminEmail:'',
     // GitHub sync — included in D so they survive even if autoLoad fails
     ghUsername:'', ghRepo:'',
+    // Known region codes for the active zone — auto-populated during rebuild
+    // Used by getAllRegions Layer 2 validation to reject phantom region keys
+    activeZoneRegions:[],
     ejsServiceId:'service_8x5yn04', ejsTemplateId:'template_l8mbtk9', ejsPublicKey:'IaT9mZNSS_294Z_J6',
     adminResetToken:'', adminResetExpiry:0,
     activeZone:'', displayUnit:'lacs', theme:'dark',
@@ -1984,8 +1987,40 @@ const SheetsAPI = {
 
       if (headerIdx < 0) {
         console.warn(`queryZoneData: no header row found in ${sheetName} (${sheetId})`);
+        AppLog.add('Sheets', `Header not found — ${sheetName}`, 'ERR',
+          `sheetId=${sheetId.substring(0,12)} — expected ZO/RO/BRANCH or Zone/Region/Branchname`);
         return null;
       }
+
+      // ── Layer 1: Hardcoded schema validation ────────────────────
+      // Verify ALL required columns are present and in the correct positions.
+      // This catches: column shifts (extra col inserted), renamed headers,
+      // format changes in source Excel files. Rejects the sheet immediately
+      // with a clear log entry rather than silently producing wrong region keys.
+      const BP_REQUIRED = { 0:'ZO', 1:'RO', 2:'BRANCH' };
+      const RD_REQUIRED = { 0:'Zone', 1:'Region', 2:'Branchname', 3:'SOLID' };
+      const required = isBP ? BP_REQUIRED : RD_REQUIRED;
+      const headerTrimmed = headers.map(h => String(h||'').trim());
+      const schemaErrors = [];
+
+      // Check required columns exist somewhere in the header (presence check)
+      for (const [pos, name] of Object.entries(required)) {
+        const idx = parseInt(pos);
+        if (headerTrimmed[idx] !== name) {
+          schemaErrors.push(
+            `col[${idx}] expected "${name}" found "${headerTrimmed[idx]||'(empty)'}"`
+          );
+        }
+      }
+
+      if (schemaErrors.length) {
+        const msg = `Schema mismatch in ${sheetName} — ${schemaErrors.join('; ')}`;
+        console.warn(`queryZoneData: ${msg} (${sheetId})`);
+        AppLog.add('Sheets', `Schema validation failed — ${sheetName}`, 'ERR',
+          `sheetId=${sheetId.substring(0,12)} · ${schemaErrors.join(' · ')}`);
+        return null; // Reject the entire sheet — do not aggregate partial/shifted data
+      }
+      // ── end schema validation ────────────────────────────────────
 
       // ── Filter rows for this zone ────────────────────────────────
       const zoneTrimmed = zone.trim().toUpperCase();
@@ -2417,11 +2452,14 @@ const ChartStore = {
 
   // Atomic write for one date: zone + all regions + all branches in one DB.set
   async writeDate(dateStr, zone, scopeMap) {
-    // scopeMap: { '__zone__': values, 'REGIONKEY': values, 'BRANCHKEY': values, ... }
+    // scopeMap: { '__zone__': values, 'REGIONKEY': values, ... }
+    // This is called during Force Rebuild / _processOneDate — the incoming data
+    // is freshly computed from source sheets and is AUTHORITATIVE.
+    // Replace the entire date entry so stale/phantom scope keys from previous
+    // sessions (e.g. branch codes that slipped into RO column) are removed.
     if (!scopeMap || !Object.keys(scopeMap).length) return;
     const store = await this._getStore(zone);
-    if (!store.dates[dateStr]) store.dates[dateStr] = {};
-    Object.assign(store.dates[dateStr], scopeMap);
+    store.dates[dateStr] = scopeMap; // full replace — not Object.assign
     await this._setStore(zone, store);
   },
 
@@ -2508,14 +2546,42 @@ const ChartStore = {
     if (!chunkJSON?.dates) return 0;
     const store = await this._getStore(zone);
     let added = 0;
-    for (const [date, values] of Object.entries(chunkJSON.dates)) {
-      if (!store.dates[date]) { store.dates[date] = values; added++; }
-      else {
-        // Merge scopes — remote wins for scopes not already in local
+    for (const [date, incoming] of Object.entries(chunkJSON.dates)) {
+      if (!store.dates[date]) {
+        // New date — write directly
+        store.dates[date] = incoming;
+        added++;
+      } else {
+        // Existing date — reconcile scope keys
+        const existing = store.dates[date];
+        const incomingKeys = new Set(Object.keys(incoming));
         let changed = false;
-        for (const [sk, sv] of Object.entries(values)) {
-          if (!store.dates[date][sk]) { store.dates[date][sk] = sv; changed = true; }
+
+        // Add/update scopes present in incoming data (fresh data wins)
+        for (const [sk, sv] of Object.entries(incoming)) {
+          if (!existing[sk] || JSON.stringify(existing[sk]) !== JSON.stringify(sv)) {
+            existing[sk] = sv;
+            changed = true;
+          }
         }
+
+        // ── Layer 3: Remove stale scope keys absent from fresh data ──
+        // If incoming has 8 scope keys but local has 9 (e.g. a phantom
+        // '29492-CHEMMARUTHY' from a previous bad aggregation), the extra
+        // local key is a corruption artifact — remove it.
+        // Only applies when incoming has a meaningful set of scopes (>= 2).
+        if (incomingKeys.size >= 2) {
+          for (const sk of Object.keys(existing)) {
+            if (!incomingKeys.has(sk)) {
+              delete existing[sk];
+              changed = true;
+              AppLog.add('Summary', `Removed stale scope key — ${date}`, 'WARN',
+                `"${sk}" not in fresh data — deleted from local chartData`);
+            }
+          }
+        }
+        // ── end stale key removal ─────────────────────────────────────
+
         if (changed) added++;
       }
     }
@@ -3577,7 +3643,44 @@ const DE = {
     }
     const fs=Object.values(bpF.data.sheets)[0];if(!fs)return null;
     const rset=new Set();
-    fs.rows.filter(r=>r['ZO']===zone).forEach(r=>rset.add(r['RO']==='-'?'__ZO__':r['RO']));
+    // ── Layer 2: RO value validation ──────────────────────────────
+    // Valid region codes are 5-digit numeric prefixes (e.g. 35130-ERNAKULAM).
+    // Branch codes appear in BRANCH column but can slip into RO column due to
+    // data entry errors in source Excel files. Detect and reject them here.
+    // A valid RO value is either '-' (under ZO) or matches the known region
+    // code pattern: 5-digit number followed by a hyphen and region name.
+    // Anything that looks like a branch code (same 5-digit format but not a
+    // known region) is treated as a data anomaly — rows roll up into __ZO__.
+    const knownRegions = Cfg.get('activeZoneRegions') || null;
+    const anomalies = new Set();
+    fs.rows.filter(r=>r['ZO']===zone).forEach(r => {
+      const ro = r['RO'];
+      if (!ro || ro === '-') { rset.add('__ZO__'); return; }
+      // If a whitelist of known regions exists, use it
+      if (knownRegions && knownRegions.length) {
+        if (knownRegions.includes(ro)) { rset.add(ro); }
+        else { anomalies.add(ro); rset.add('__ZO__'); } // treat as under-ZO
+        return;
+      }
+      // No whitelist: heuristic — a valid RO looks like 'NNNNN-NAME'
+      // A branch code also looks like this BUT it should match a BRANCH value
+      // Check: if the same value appears in the BRANCH column of ANY row
+      // for this zone, it's a branch code appearing in the wrong column
+      const appearsAsBranch = fs.rows.some(r2 =>
+        r2['ZO'] === zone && r2['BRANCH'] === ro
+      );
+      if (appearsAsBranch) {
+        anomalies.add(ro);
+        rset.add('__ZO__'); // roll up into ZO scope, don't create phantom region
+      } else {
+        rset.add(ro);
+      }
+    });
+    if (anomalies.size) {
+      AppLog.add('Sheets', `RO anomaly detected — ${dateStr}`, 'WARN',
+        `${[...anomalies].join(', ')} appear in RO column but are BRANCH codes — rolled up into __ZO__`);
+    }
+    // ── end RO validation ─────────────────────────────────────────
     const regions=[...rset].sort((a,b)=>{if(a==='__ZO__')return -1;if(b==='__ZO__')return 1;return a.localeCompare(b);});
     const data={};
     for(const region of regions)data[region]=await this.getAgg(dateStr,{type:'region',zone,region},fallback);
@@ -4637,7 +4740,7 @@ const SummaryMgr = {
     };
     Cfg.set('summaryFileIds', ids);
     await Cfg.save();
-    // Push updated config to GitHub — await and log result
+    // Push updated config to GitHub — includes summaryFileIds, fileIndexSheetIds, activeZoneRegions
     AppLog.add('GitHub', 'Saving summary file IDs to config', 'RUN',
       `recent=${ids.recent?.substring(0,12)||'null'} history=${ids.history?.substring(0,12)||'null'}`);
     const pushed = await ConfigSync.push(true);
@@ -5026,6 +5129,19 @@ const DataIntegrity = {
           const rAgg = allRegions.data[rk];
           if (rAgg?.values && Object.keys(rAgg.values).length)
             result.scopeMap[rk] = rAgg.values;
+        }
+        // Auto-update the known region whitelist from the first date that has regions
+        // This is used by getAllRegions Layer 2 validation on subsequent reads
+        const validRegions = allRegions.regions.filter(r => r !== '__ZO__');
+        if (validRegions.length > 0) {
+          const existing = Cfg.get('activeZoneRegions') || [];
+          const merged = [...new Set([...existing, ...validRegions])].sort();
+          if (merged.length !== existing.length ||
+              merged.some((r,i) => r !== existing[i])) {
+            Cfg.set('activeZoneRegions', merged);
+            AppLog.add('App', `Region whitelist updated — ${merged.length} regions`, 'OK',
+              merged.join(', '));
+          }
         }
       }
 
