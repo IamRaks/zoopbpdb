@@ -544,6 +544,85 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-05-30T11:10:33.325Z",
+  "_savedAt": "2026-05-30T11:27:16.507Z",
+  "bpSchema": {
+    "sourceDate": "2026-05-24",
+    "ros": [
+      "35130-ERNAKULAM",
+      "36750-THIRUVANANTHAPURAM",
+      "56140-KOZHIKODE",
+      "67280-KOTTAYAM",
+      "78480-THRISSUR",
+      "78490-KOLLAM"
+    ],
+    "columns": [
+      "Daily Deposits::CASA",
+      "Daily Deposits::Current Deposit %",
+      "Daily Deposits::Current Deposits",
+      "Daily Deposits::Retail Term Deposit",
+      "Daily Deposits::Saving Deposit %",
+      "Daily Deposits::Saving Deposits",
+      "Daily Deposits::Term Deposits",
+      "Daily Deposits::Term Deposits\n(incl Bank Dep)",
+      "Daily Deposits::Total Deposits",
+      "Standard Advance (Core)::Agri",
+      "Standard Advance (Core)::Corporate",
+      "Standard Advance (Core)::Gold Loan",
+      "Standard Advance (Core)::MSME",
+      "Standard Advance (Core)::Medium",
+      "Standard Advance (Core)::Micro",
+      "Standard Advance (Core)::Other Advances",
+      "Standard Advance (Core)::Retail",
+      "Standard Advance (Core)::Small",
+      "Standard Advance (Core)::Total Advance",
+      "Standard Advance (Core)::Union Education",
+      "Standard Advance (Core)::Union Home",
+      "Standard Advance (Core)::Union Miles",
+      "Standard Advance (Core)::Union Mortgage",
+      "Standard Advance (Core)::Union Personal",
+      "Total Advance (Core)::Agri",
+      "Total Advance (Core)::Corporate",
+      "Total Advance (Core)::Gold Loan",
+      "Total Advance (Core)::MSME",
+      "Total Advance (Core)::Medium",
+      "Total Advance (Core)::Micro",
+      "Total Advance (Core)::Other Advances",
+      "Total Advance (Core)::Retail",
+      "Total Advance (Core)::Small",
+      "Total Advance (Core)::Total Advance",
+      "Total Advance (Core)::Union Education",
+      "Total Advance (Core)::Union Home",
+      "Total Advance (Core)::Union Miles",
+      "Total Advance (Core)::Union Mortgage",
+      "Total Advance (Core)::Union Personal"
+    ],
+    "setAt": "2026-05-30T11:26:34.967Z"
+  },
+  "rdSchema": {
+    "sourceDate": "2026-05-24",
+    "regions": [
+      "ERNAKULAM",
+      "KOLLAM",
+      "KOTTAYAM",
+      "KOZHIKODE",
+      "LCB-ERNAKULAM",
+      "THIRUVANANTHAPURAM",
+      "THRISSUR"
+    ],
+    "columns": {
+      "Retail_Deposits_PositionSummary": [
+        "CAA BALANCE",
+        "CAA Below 3Cr",
+        "CAA COUNT",
+        "SBA BALANCE",
+        "SBA Below 3Cr",
+        "SBA COUNT",
+        "TDA BALANCE",
+        "TDA Below 3Cr",
+        "TDA COUNT"
+      ]
+    },
+    "setAt": "2026-05-30T11:26:37.378Z"
+  },
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
