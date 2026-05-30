@@ -5788,16 +5788,13 @@ const Admin = {
     document.getElementById('adminOverlay').classList.remove('open');
     // Push admin log to Drive in background
     APILog.pushToDrive().catch(() => {});
-    const np = document.getElementById('noSummaryPrompt');
     const zone = Cfg.get('activeZone');
-    // If noSummaryPrompt was showing, check if data is now available
-    if (np && np.style.display !== 'none') {
+    // If landing page is still showing (no-summary state), check if data now available
+    const dw2 = document.getElementById('dashWrap');
+    if (dw2 && dw2.style.display === 'none') {
       ChartStore._getStore(zone).then(store => {
         if (store?.dates && Object.keys(store.dates).length > 0) {
-          np.style.display = 'none';
-          Dashboard.init().then(() => {
-            document.getElementById('dashWrap').style.display = 'block';
-          }).catch(() => {});
+          Dashboard.init().then(() => App.hideLanding()).catch(() => {});
         }
       });
       return;
@@ -7718,12 +7715,8 @@ const AppLog = {
 // ================================================================
 const App = {
   showLanding(statusTxt, progPct) {
-    const spr = document.getElementById('setupPrompt');
-    if (spr) spr.style.display = 'none';
-    const dw = document.getElementById('dashWrap');
-    if (dw) { dw.style.display = 'none'; dw.classList.remove('fade-in'); }
-    const lp = document.getElementById('landingPage');
-    if (lp) { lp.style.display = 'flex'; lp.classList.remove('fade-out'); }
+    // Only update progress bar and spinner — never touch visibility of any element.
+    // The landing page stays steady; only the thin progress bar and status text change.
     const st = document.getElementById('landingStatusTxt');
     const pf = document.getElementById('landingProgFill');
     const sp = document.getElementById('landingSpin');
@@ -7735,11 +7728,27 @@ const App = {
     if (cz && zone) cz.textContent = zone + ' ZONE';
   },
 
+  // Show no-summary state: keep landing page visible, swap status bar for Admin+Log buttons
+  showNoSummary() {
+    const st = document.getElementById('landingStatus');
+    if (st) {
+      st.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:6px;width:100%;padding:4px 0">
+          <span style="font-size:12px;color:var(--text3)">⚠️ Dashboard data not available — contact your Administrator</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn-s" onclick="App.openAdminPrompt()">⚙ Admin Login</button>
+            <button class="btn-s" style="background:var(--bg3)" onclick="App.showActivityLog()">📋 View Activity Log</button>
+          </div>
+        </div>`;
+    }
+    // Fill progress bar to 100% in red to signal failure
+    const pf = document.getElementById('landingProgFill');
+    if (pf) { pf.style.width = '100%'; pf.style.background = 'var(--neg,#f85149)'; }
+  },
+
   hideLanding() {
     const lp = document.getElementById('landingPage');
     const dw = document.getElementById('dashWrap');
-    const np = document.getElementById('noSummaryPrompt');
-    if (np) np.style.display = 'none';
     if (!lp) return;
     dw.style.display = 'block';
     lp.classList.add('fade-out');
@@ -7909,12 +7918,10 @@ const App = {
 
     // ── Step 5: No data available ─────────────────────────────
     if (!summaryLoaded) {
-      AppLog.add('App', 'No data available — showing setup prompt', 'ERR',
+      AppLog.add('App', 'No data available — showing no-summary state', 'ERR',
         'summaryIds.recent=' + (summaryIds.recent||'null'));
-      const lp = document.getElementById('landingPage');
-      if (lp) lp.style.display = 'none';
-      const np = document.getElementById('noSummaryPrompt');
-      if (np) np.style.display = 'flex';
+      // Keep landing page steady — just replace the status bar with Admin+Log buttons
+      this.showNoSummary();
       // Still try silent background sync in case admin token available
       setTimeout(() => this._backgroundSync(zone), 1000);
       return;
@@ -7976,17 +7983,14 @@ const App = {
           AppLog.add('App', 'ensureChartData error', 'ERR', e.message);
         });
       }
-      const np = document.getElementById('noSummaryPrompt');
-      if (np && np.style.display !== 'none') {
+      // If landing page is still showing (no-summary state), check if data is now available
+      const dw2 = document.getElementById('dashWrap');
+      if (dw2 && dw2.style.display === 'none') {
         const store = await ChartStore._getStore(zone);
         if (store?.dates && Object.keys(store.dates).length > 0) {
           AppLog.add('App', 'Data now available — loading dashboard', 'OK');
-          np.style.display = 'none';
-          const dw = document.getElementById('dashWrap');
-          if (dw && dw.style.display === 'none') {
-            await Dashboard.init();
-            dw.style.display = 'block';
-          }
+          await Dashboard.init();
+          App.hideLanding();
         }
       }
     } catch(e) {
