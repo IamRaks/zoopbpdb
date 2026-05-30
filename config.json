@@ -18,7 +18,7 @@
   "adminResetToken": "",
   "adminResetExpiry": 0,
   "activeZone": "ERNAKULAM",
-  "displayUnit": "crores",
+  "displayUnit": "lacs",
   "theme": "dark",
   "holidaySats": [
     2,
@@ -537,6 +537,6 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-05-30T05:11:32.397Z",
+  "_savedAt": "2026-05-30T05:34:23.633Z",
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
