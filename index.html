@@ -702,6 +702,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <button class="act-chip" data-filter="Sheets API" onclick="AppLog.setFilter('Sheets API',this)">Sheets</button>
           <button class="act-chip" data-filter="GitHub" onclick="AppLog.setFilter('GitHub',this)">GitHub</button>
           <button class="act-chip" data-filter="Summary" onclick="AppLog.setFilter('Summary',this)">Summary</button>
+          <button class="act-chip" data-filter="Schema" onclick="AppLog.setFilter('Schema',this)">Schema</button>
+          <button class="act-chip" data-filter="DataIntegrity" onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
           <button class="act-chip" data-filter="ERR" onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
         </div>
         <!-- Log entries -->
@@ -738,6 +740,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <button class="act-chip" data-filter="Sheets API" onclick="AppLog.setFilter('Sheets API',this)">Sheets</button>
     <button class="act-chip" data-filter="GitHub" onclick="AppLog.setFilter('GitHub',this)">GitHub</button>
     <button class="act-chip" data-filter="Summary" onclick="AppLog.setFilter('Summary',this)">Summary</button>
+    <button class="act-chip" data-filter="Schema" onclick="AppLog.setFilter('Schema',this)">Schema</button>
+    <button class="act-chip" data-filter="DataIntegrity" onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
     <button class="act-chip" data-filter="ERR" onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
   </div>
   <div id="actOverlayBody" style="flex:1;overflow-y:auto;padding:6px 12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.9"></div>
@@ -1101,6 +1105,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
             <button class="act-chip" onclick="AdminLogUI.setFilter('GitHub',this)">GitHub</button>
             <button class="act-chip" onclick="AdminLogUI.setFilter('OAuth',this)">OAuth</button>
             <button class="act-chip" onclick="AdminLogUI.setFilter('GAS',this)">GAS</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('Schema',this)">Schema</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('DataIntegrity',this)">Integrity</button>
             <button class="act-chip" onclick="AdminLogUI.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
           </div>
 
@@ -2130,6 +2136,249 @@ const SheetsAPI = {
       result.sheets[sn] = { headers, rows }; // rows retain SOLID for filterRD
     }
     return result;
+  }
+};
+
+// ================================================================
+// SCHEMA VALIDATOR — detects RO/column changes between files
+// ================================================================
+const SchemaValidator = {
+
+  // Normalise an RO/Region value: trim spaces around hyphens and outer whitespace
+  // e.g. "35130 - ERNAKULAM " → "35130-ERNAKULAM"
+  normalise(ro) {
+    if (!ro) return '';
+    return ro.split('-').map(p => p.trim()).filter(Boolean).join('-');
+  },
+
+  // Extract BP schema from a loaded sheetData object (already fetched by buildBPFromSheet)
+  // Returns { ros: [...], columns: [...] }
+  extractBPSchema(sheetData, zone) {
+    const ros = new Set();
+    const columns = new Set();
+    for (const sn of Object.keys(sheetData.sheets)) {
+      const { headers, rows } = sheetData.sheets[sn];
+      headers.forEach(h => columns.add(`${sn}::${h}`));
+      rows.filter(r => (r['ZO']||'').trim() === zone).forEach(r => {
+        const ro = (r['RO'] || '').trim();
+        if (ro && ro !== '-') ros.add(this.normalise(ro));
+      });
+    }
+    return {
+      ros: [...ros].sort(),
+      columns: [...columns].sort()
+    };
+  },
+
+  // Extract RD schema from a loaded rdData object (already fetched by buildRDFromSheet)
+  // Returns { regions: [...], columns: { sheetName: [...] } }
+  extractRDSchema(rdData, zone) {
+    const regions = new Set();
+    const columns = {};
+    for (const sn of Object.keys(rdData.sheets)) {
+      const { headers, rows } = rdData.sheets[sn];
+      columns[sn] = [...headers].sort();
+      rows.filter(r => (r['Zone']||'').trim() === zone).forEach(r => {
+        const reg = (r['Region'] || '').trim();
+        if (reg && reg !== '-') regions.add(this.normalise(reg));
+      });
+    }
+    return {
+      regions: [...regions].sort(),
+      columns
+    };
+  },
+
+  // Log a schema validation result to both AppLog (Activity) and APILog (Admin)
+  _log(entity, action, status, detail) {
+    AppLog.add(entity, action, status, detail);
+    // Also write into APILog entries so it appears in Admin Log with full detail
+    const ok = status === 'OK' || status === 'INF';
+    const isErr = status === 'ERR';
+    APILog._entries.push({
+      ts: new Date(),
+      sessionId: APILog._sessionId,
+      session: APILog._session,
+      entity,
+      label: action,
+      status,
+      ok,
+      durationMs: null,
+      detail: detail || '',
+      stream: 'app'
+    });
+    if (APILog._entries.length > APILog._MAX_MEM) APILog._entries.shift();
+    APILog._scheduleFlush();
+  },
+
+  // Validate BP schema for a given date against the stored reference
+  // sheetData: result of buildBPFromSheet (already fetched)
+  // dateStr: the date being processed
+  // zone: active zone name
+  async validateBP(sheetData, dateStr, zone) {
+    const extracted = this.extractBPSchema(sheetData, zone);
+    const ref = Cfg.get('bpSchema');
+
+    if (!ref) {
+      // No reference yet — store this as the reference schema
+      Cfg.set('bpSchema', {
+        sourceDate: dateStr,
+        ros: extracted.ros,
+        columns: extracted.columns,
+        setAt: new Date().toISOString()
+      });
+      this._log('Schema', `BP reference schema set — ${dateStr}`, 'OK',
+        `${extracted.ros.length} ROs: ${extracted.ros.join(', ')} | ${extracted.columns.length} columns`);
+      return { ok: true, isReference: true };
+    }
+
+    // Compare against reference
+    const refRos = new Set(ref.ros);
+    const extRos = new Set(extracted.ros);
+    const roAdded   = extracted.ros.filter(r => !refRos.has(r));
+    const roRemoved = ref.ros.filter(r => !extRos.has(r));
+
+    const refCols = new Set(ref.columns);
+    const extCols = new Set(extracted.columns);
+    const colAdded   = extracted.columns.filter(c => !refCols.has(c));
+    const colRemoved = ref.columns.filter(c => !extCols.has(c));
+
+    const hasChanges = roAdded.length || roRemoved.length || colAdded.length || colRemoved.length;
+
+    if (!hasChanges) {
+      this._log('Schema', `BP schema validated — ${dateStr}`, 'OK',
+        `Matches reference (${ref.sourceDate}) — ${extracted.ros.length} ROs, ${extracted.columns.length} columns`);
+      return { ok: true };
+    }
+
+    // Build detailed change report
+    const parts = [];
+    if (roAdded.length)   parts.push(`ROs added: ${roAdded.join(', ')}`);
+    if (roRemoved.length) parts.push(`ROs removed: ${roRemoved.join(', ')}`);
+    if (colAdded.length)  parts.push(`Columns added (${colAdded.length}): ${colAdded.slice(0,5).join(', ')}${colAdded.length>5?' …':''}`);
+    if (colRemoved.length) parts.push(`Columns removed (${colRemoved.length}): ${colRemoved.slice(0,5).join(', ')}${colRemoved.length>5?' …':''}`);
+
+    this._log('Schema', `BP schema CHANGED — ${dateStr}`, 'WARN',
+      `Ref: ${ref.sourceDate} | ${parts.join(' | ')}`);
+
+    return { ok: false, roAdded, roRemoved, colAdded, colRemoved };
+  },
+
+  // Validate RD schema for a given date against the stored reference
+  async validateRD(rdData, dateStr, zone) {
+    const extracted = this.extractRDSchema(rdData, zone);
+    const ref = Cfg.get('rdSchema');
+
+    if (!ref) {
+      Cfg.set('rdSchema', {
+        sourceDate: dateStr,
+        regions: extracted.regions,
+        columns: extracted.columns,
+        setAt: new Date().toISOString()
+      });
+      const colCount = Object.values(extracted.columns).reduce((s,a) => s + a.length, 0);
+      this._log('Schema', `RD reference schema set — ${dateStr}`, 'OK',
+        `${extracted.regions.length} regions: ${extracted.regions.join(', ')} | ${colCount} columns across ${Object.keys(extracted.columns).length} sheets`);
+      return { ok: true, isReference: true };
+    }
+
+    // Compare regions
+    const refRegs = new Set(ref.regions);
+    const extRegs = new Set(extracted.regions);
+    const regAdded   = extracted.regions.filter(r => !refRegs.has(r));
+    const regRemoved = ref.regions.filter(r => !extRegs.has(r));
+
+    // Compare columns per sheet
+    const allSheets = new Set([...Object.keys(ref.columns), ...Object.keys(extracted.columns)]);
+    const colChanges = [];
+    for (const sn of allSheets) {
+      const rc = new Set(ref.columns[sn] || []);
+      const ec = new Set(extracted.columns[sn] || []);
+      const added   = (extracted.columns[sn] || []).filter(c => !rc.has(c));
+      const removed = (ref.columns[sn] || []).filter(c => !ec.has(c));
+      if (added.length || removed.length)
+        colChanges.push(`${sn}: +${added.length}/-${removed.length}`);
+    }
+
+    const hasChanges = regAdded.length || regRemoved.length || colChanges.length;
+
+    if (!hasChanges) {
+      const colCount = Object.values(extracted.columns).reduce((s,a) => s + a.length, 0);
+      this._log('Schema', `RD schema validated — ${dateStr}`, 'OK',
+        `Matches reference (${ref.sourceDate}) — ${extracted.regions.length} regions, ${colCount} columns`);
+      return { ok: true };
+    }
+
+    const parts = [];
+    if (regAdded.length)   parts.push(`Regions added: ${regAdded.join(', ')}`);
+    if (regRemoved.length) parts.push(`Regions removed: ${regRemoved.join(', ')}`);
+    if (colChanges.length) parts.push(`Column changes — ${colChanges.join(', ')}`);
+
+    this._log('Schema', `RD schema CHANGED — ${dateStr}`, 'WARN',
+      `Ref: ${ref.sourceDate} | ${parts.join(' | ')}`);
+
+    return { ok: false, regAdded, regRemoved, colChanges };
+  },
+
+  // Run aggregation tally check on a completed scopeMap
+  // scopeMap: { __zone__: {col:val}, __ZO__: {...}, '35130-ERNAKULAM': {...}, ... }
+  // dateStr: for logging
+  validateTally(scopeMap, dateStr) {
+    const zone = scopeMap['__zone__'];
+    if (!zone) {
+      this._log('DataIntegrity', `Tally skipped — no __zone__ data — ${dateStr}`, 'WARN', '');
+      return;
+    }
+
+    const regionScopes = Object.keys(scopeMap).filter(k => k !== '__zone__');
+    if (!regionScopes.length) {
+      this._log('DataIntegrity', `Tally skipped — no region scopes — ${dateStr}`, 'WARN', '');
+      return;
+    }
+
+    const TOLERANCE = 0.01; // 0.01%
+    const mismatches = [];
+    const skippedPct = [];
+    let checkedCount = 0;
+
+    for (const col of Object.keys(zone)) {
+      // Skip percentage columns — they are not additive
+      if (/(%|percent|ratio)/i.test(col)) { skippedPct.push(col); continue; }
+
+      const zoneVal = zone[col];
+      if (zoneVal === null || zoneVal === undefined) continue;
+
+      const regionSum = regionScopes.reduce((sum, sk) => {
+        const v = scopeMap[sk]?.[col];
+        return sum + (v !== null && v !== undefined ? v : 0);
+      }, 0);
+
+      if (zoneVal === 0 && regionSum === 0) { checkedCount++; continue; }
+      const denom = Math.abs(zoneVal) || Math.abs(regionSum);
+      const diffPct = Math.abs(zoneVal - regionSum) / denom * 100;
+
+      if (diffPct > TOLERANCE) {
+        mismatches.push({
+          col,
+          zone: zoneVal,
+          sum: regionSum,
+          diff: diffPct.toFixed(4)
+        });
+      }
+      checkedCount++;
+    }
+
+    if (!mismatches.length) {
+      this._log('DataIntegrity', `Tally OK — ${dateStr}`, 'OK',
+        `${checkedCount} columns verified across ${regionScopes.length} scopes` +
+        (skippedPct.length ? ` | ${skippedPct.length} % columns skipped (non-additive)` : ''));
+    } else {
+      const detail = mismatches.slice(0, 8).map(m =>
+        `${m.col}: zone=${m.zone.toFixed(2)} sum=${m.sum.toFixed(2)} diff=${m.diff}%`
+      ).join(' | ') + (mismatches.length > 8 ? ` | …+${mismatches.length - 8} more` : '');
+      this._log('DataIntegrity', `Tally MISMATCH — ${dateStr}`, 'WARN',
+        `${mismatches.length} column(s) out of tolerance (>${TOLERANCE}%) | ${detail}`);
+    }
   }
 };
 
@@ -5136,10 +5385,20 @@ const DataIntegrity = {
       result.bpOk = true;
       await DB.set('bpFiles', dateStr, sheetData);
 
+      // ── Schema validation: BP ──────────────────────────────────
+      await SchemaValidator.validateBP(sheetData, dateStr, zone).catch(e =>
+        AppLog.add('Schema', `BP schema check failed — ${dateStr}`, 'ERR', e.message));
+
       // Fetch RD if available
       if (entry.rdSheetId) {
         const rdData = await SheetsAPI.buildRDFromSheet(entry.rdSheetId, dateStr, zone).catch(()=>null);
-        if (rdData) { await DB.set('rdFiles', dateStr, rdData); result.rdOk = true; }
+        if (rdData) {
+          await DB.set('rdFiles', dateStr, rdData);
+          result.rdOk = true;
+          // ── Schema validation: RD ────────────────────────────────
+          await SchemaValidator.validateRD(rdData, dateStr, zone).catch(e =>
+            AppLog.add('Schema', `RD schema check failed — ${dateStr}`, 'ERR', e.message));
+        }
       } else {
         result.rdSkipped = true;
       }
@@ -5170,6 +5429,11 @@ const DataIntegrity = {
               merged.join(', '));
           }
         }
+      }
+
+      // ── Aggregation tally check ────────────────────────────────
+      if (Object.keys(result.scopeMap).length > 1) {
+        SchemaValidator.validateTally(result.scopeMap, dateStr);
       }
 
       versions[dateStr] = {
