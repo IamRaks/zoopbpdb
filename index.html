@@ -2048,7 +2048,11 @@ const SheetsAPI = {
             obj[hTrim] = raw ? String(raw).trim() : '';
           } else {
             const num = parseFloat(String(raw || '0').replace(/,/g,''));
-            obj[hTrim] = isNaN(num) ? null : num;
+            const parsed = isNaN(num) ? null : num;
+            // RD Sheets data is in crores — normalise to lacs (same as parseRD xlsx path).
+            // Exclude pct and count columns — they are stored as-is (not monetary amounts).
+            const isMonetary = isRD && !Parser.isPct(hTrim) && !Parser.isCount(hTrim);
+            obj[hTrim] = (isMonetary && parsed !== null) ? Parser.toLacs(parsed, 'crores') : parsed;
           }
         });
         // Extract SOLID and branch name for BP rows
@@ -2258,9 +2262,14 @@ const XLSXConverter = {
   // Idempotent: checks for existing Sheet with same name first
   async convertFile(token, xlsxFileId, name, cacheFolderId) {
     try {
+      // Drive strips the .xlsx extension when converting to a Sheet.
+      // Use the extension-free name for both the dedup check and the copy request
+      // so they match — otherwise the check never finds the existing sheet and
+      // a duplicate is created on every rebuild.
+      const sheetName = name.replace(/\.xlsx$/i, '');
       // Check if a Sheet with this name already exists in the cache folder
       const q = encodeURIComponent(
-        `name='${name}' and '${cacheFolderId}' in parents ` +
+        `name='${sheetName}' and '${cacheFolderId}' in parents ` +
         `and mimeType='${this.MIME_SHEET}' and trashed=false`
       );
       const check = await fetch(
@@ -2270,7 +2279,7 @@ const XLSXConverter = {
       if (check.ok) {
         const existing = await check.json();
         if (existing.files?.[0]?.id) {
-          console.log(`Sheet already exists for ${name}, reusing`);
+          console.log(`Sheet already exists for ${sheetName}, reusing`);
           return existing.files[0].id; // reuse existing — no duplicate
         }
       }
@@ -2280,7 +2289,7 @@ const XLSXConverter = {
         {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, mimeType: this.MIME_SHEET, parents: [cacheFolderId] })
+          body: JSON.stringify({ name: sheetName, mimeType: this.MIME_SHEET, parents: [cacheFolderId] })
         }
       );
       if (!r.ok) { console.warn(`Convert ${name}: HTTP ${r.status}`); return null; }
