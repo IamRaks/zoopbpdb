@@ -11,6 +11,7 @@
   "adminEmail": "zoopekm.proposals@gmail.com",
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
+  "activeZoneRegions": [],
   "ejsServiceId": "service_8x5yn04",
   "ejsTemplateId": "template_l8mbtk9",
   "ejsPublicKey": "IaT9mZNSS_294Z_J6",
@@ -536,6 +537,6 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-05-30T03:30:14.866Z",
+  "_savedAt": "2026-05-30T05:10:54.363Z",
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
