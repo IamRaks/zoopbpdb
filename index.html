@@ -2683,7 +2683,7 @@ const GDrive = {
           'https://www.googleapis.com/auth/drive.file',
           'https://www.googleapis.com/auth/spreadsheets.readonly'
         ].join(' '),
-        prompt: interactive ? 'select_account' : '',
+        prompt: interactive ? 'select_account' : 'none',
         callback: async (resp) => {
           if (resp.error) { rej(new Error(resp.error)); return; }
           this.token = resp.access_token;
@@ -2704,7 +2704,7 @@ const GDrive = {
           } else rej(new Error(err.type || 'auth_error'));
         }
       });
-      client.requestAccessToken({ prompt: interactive ? '' : 'none' });
+      client.requestAccessToken({ prompt: interactive ? 'select_account' : 'none' });
     });
   },
 
