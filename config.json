@@ -154,15 +154,389 @@
       "enabled": false
     }
   ],
-  "sheets": {},
-  "paramOrder": [],
-  "derivedParams": [],
+  "sheets": {
+    "Daily Deposits": {
+      "enabled": true,
+      "source": "bp",
+      "columns": {
+        "Current Deposits": {
+          "enabled": true,
+          "displayName": "CURRENT DEPOSITS",
+          "direction": "higher"
+        },
+        "Saving Deposits": {
+          "enabled": true,
+          "displayName": "SAVING DEPOSITS",
+          "direction": "higher"
+        },
+        "CASA": {
+          "enabled": true,
+          "displayName": "CASA DEPOSITS",
+          "direction": "higher"
+        },
+        "Term Deposits": {
+          "enabled": true,
+          "displayName": "TERM DEPOSITS",
+          "direction": "higher"
+        },
+        "Term Deposits (incl Bank Dep)": {
+          "enabled": false,
+          "displayName": "Term Deposits (incl Bank Dep)",
+          "direction": "higher"
+        },
+        "Retail Term Deposit": {
+          "enabled": true,
+          "displayName": "w/w Retail Term Deposit",
+          "direction": "higher"
+        },
+        "Total Deposits": {
+          "enabled": true,
+          "displayName": "TOTAL DEPOSITS",
+          "direction": "higher"
+        },
+        "Current Deposit %": {
+          "enabled": false,
+          "displayName": "Current Deposit %",
+          "direction": "higher"
+        },
+        "Saving Deposit %": {
+          "enabled": false,
+          "displayName": "Saving Deposit %",
+          "direction": "higher"
+        }
+      }
+    },
+    "Total Advance (Core)": {
+      "enabled": false,
+      "source": "bp",
+      "columns": {
+        "Total Advance": {
+          "enabled": true,
+          "displayName": "Total Advance",
+          "direction": "higher"
+        },
+        "Retail": {
+          "enabled": true,
+          "displayName": "Retail",
+          "direction": "higher"
+        },
+        "Union Home": {
+          "enabled": true,
+          "displayName": "Union Home",
+          "direction": "higher"
+        },
+        "Union Miles": {
+          "enabled": true,
+          "displayName": "Union Miles",
+          "direction": "higher"
+        },
+        "Union Education": {
+          "enabled": true,
+          "displayName": "Union Education",
+          "direction": "higher"
+        },
+        "Union Mortgage": {
+          "enabled": true,
+          "displayName": "Union Mortgage",
+          "direction": "higher"
+        },
+        "Union Personal": {
+          "enabled": true,
+          "displayName": "Union Personal",
+          "direction": "higher"
+        },
+        "Agri": {
+          "enabled": true,
+          "displayName": "Agri",
+          "direction": "higher"
+        },
+        "MSME": {
+          "enabled": true,
+          "displayName": "MSME",
+          "direction": "higher"
+        },
+        "Micro": {
+          "enabled": true,
+          "displayName": "Micro",
+          "direction": "higher"
+        },
+        "Small": {
+          "enabled": true,
+          "displayName": "Small",
+          "direction": "higher"
+        },
+        "Medium": {
+          "enabled": true,
+          "displayName": "Medium",
+          "direction": "higher"
+        },
+        "Corporate": {
+          "enabled": true,
+          "displayName": "Corporate",
+          "direction": "higher"
+        },
+        "Gold Loan": {
+          "enabled": true,
+          "displayName": "Gold Loan",
+          "direction": "higher"
+        },
+        "Other Advances": {
+          "enabled": true,
+          "displayName": "Other Advances",
+          "direction": "higher"
+        }
+      }
+    },
+    "Standard Advance (Core)": {
+      "enabled": true,
+      "source": "bp",
+      "columns": {
+        "Total Advance": {
+          "enabled": true,
+          "displayName": "TOTAL STD ADVANCES",
+          "direction": "higher"
+        },
+        "Retail": {
+          "enabled": true,
+          "displayName": "TOTAL RETAIL ADVANCES",
+          "direction": "higher"
+        },
+        "Union Home": {
+          "enabled": false,
+          "displayName": "Union Home",
+          "direction": "higher"
+        },
+        "Union Miles": {
+          "enabled": false,
+          "displayName": "Union Miles",
+          "direction": "higher"
+        },
+        "Union Education": {
+          "enabled": false,
+          "displayName": "Union Education",
+          "direction": "higher"
+        },
+        "Union Mortgage": {
+          "enabled": false,
+          "displayName": "Union Mortgage",
+          "direction": "higher"
+        },
+        "Union Personal": {
+          "enabled": false,
+          "displayName": "Union Personal",
+          "direction": "higher"
+        },
+        "Agri": {
+          "enabled": true,
+          "displayName": "TOTAL STD CORE AGRICULTURE",
+          "direction": "higher"
+        },
+        "MSME": {
+          "enabled": true,
+          "displayName": "MSME",
+          "direction": "higher"
+        },
+        "Micro": {
+          "enabled": false,
+          "displayName": "Micro",
+          "direction": "higher"
+        },
+        "Small": {
+          "enabled": false,
+          "displayName": "Small",
+          "direction": "higher"
+        },
+        "Medium": {
+          "enabled": false,
+          "displayName": "Medium",
+          "direction": "higher"
+        },
+        "Corporate": {
+          "enabled": false,
+          "displayName": "Corporate",
+          "direction": "higher"
+        },
+        "Gold Loan": {
+          "enabled": false,
+          "displayName": "Gold Loan",
+          "direction": "higher"
+        },
+        "Other Advances": {
+          "enabled": false,
+          "displayName": "Other Advances",
+          "direction": "higher"
+        }
+      }
+    },
+    "Retail_Deposits_PositionSummary": {
+      "enabled": true,
+      "source": "rd",
+      "columns": {
+        "SBA COUNT": {
+          "enabled": true,
+          "displayName": "SBA COUNT",
+          "direction": "higher"
+        },
+        "SBA BALANCE": {
+          "enabled": true,
+          "displayName": "SBA BALANCE",
+          "direction": "higher"
+        },
+        "CAA COUNT": {
+          "enabled": true,
+          "displayName": "CAA COUNT",
+          "direction": "higher"
+        },
+        "CAA BALANCE": {
+          "enabled": true,
+          "displayName": "CAA BALANCE",
+          "direction": "higher"
+        },
+        "TDA COUNT": {
+          "enabled": true,
+          "displayName": "TDA COUNT",
+          "direction": "higher"
+        },
+        "TDA BALANCE": {
+          "enabled": true,
+          "displayName": "TDA BALANCE",
+          "direction": "higher"
+        },
+        "SBA Below 3Cr": {
+          "enabled": true,
+          "displayName": "SBA Below 3Cr",
+          "direction": "higher"
+        },
+        "CAA Below 3Cr": {
+          "enabled": true,
+          "displayName": "CAA Below 3Cr",
+          "direction": "higher"
+        },
+        "TDA Below 3Cr": {
+          "enabled": true,
+          "displayName": "TDA Below 3Cr",
+          "direction": "higher"
+        }
+      }
+    }
+  },
+  "paramOrder": [
+    "__d__::total_business",
+    "Daily Deposits::Total Deposits",
+    "Daily Deposits::CASA",
+    "Daily Deposits::Current Deposits",
+    "Daily Deposits::Saving Deposits",
+    "__d__::retail_casa",
+    "Daily Deposits::Term Deposits",
+    "Daily Deposits::Retail Term Deposit",
+    "Standard Advance (Core)::Total Advance",
+    "Standard Advance (Core)::Retail",
+    "Standard Advance (Core)::Agri",
+    "Standard Advance (Core)::MSME"
+  ],
+  "derivedParams": [
+    {
+      "name": "total_business",
+      "displayName": "TOTAL BUSINESS",
+      "direction": "higher",
+      "tokens": [
+        {
+          "sheet": "Daily Deposits",
+          "col": "Total Deposits",
+          "op": "+"
+        },
+        {
+          "sheet": "Standard Advance (Core)",
+          "col": "Total Advance",
+          "op": "+"
+        }
+      ]
+    },
+    {
+      "name": "retail_casa",
+      "displayName": "RETAIL CASA",
+      "direction": "higher",
+      "tokens": [
+        {
+          "sheet": "Retail_Deposits_PositionSummary",
+          "col": "SBA BALANCE",
+          "op": "+"
+        },
+        {
+          "sheet": "Retail_Deposits_PositionSummary",
+          "col": "CAA BALANCE",
+          "op": "+"
+        }
+      ]
+    }
+  ],
   "summaryFileIds": {
     "meta": null,
     "recent": null,
     "history": null
   },
-  "fileIndexSheetIds": {},
-  "_savedAt": "2026-05-31T15:09:33.396Z",
+  "fileIndexSheetIds": {
+    "2026-03-31": {
+      "bpSheetId": "10HspaAC6ixmNKLkdaB7t9pmslu59qxTxkXBGxJSrMY4",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1A3UjBGZjtr4p6d1Vab2e0XcQO9DvvwvZpdlKh-EjzRA",
+      "rdConvertedVersion": ""
+    },
+    "2026-04-30": {
+      "bpSheetId": "1s2oaGtc0nU8BgMVHwyGbJKroIxRfOzmU8oTdwwRGEmA",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1BIugUXl8GlNS3e_qLRfLUrnYaV3cNa0GRPKTvnbuUe0",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-02": {
+      "bpSheetId": "1b0_l9O0gB_nmedr1n_aQ1AbwBqgPTZm-pJJpY6s2NtM",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1i3S6-_iGTk2gOVtn_tw_kuBzBj1sGA_91RGDOmq1iRI",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-08": {
+      "bpSheetId": "1KEieMRZJsfmR5TzWGjsFd5a-BmLq5nLyN5WPr4YG-yA",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1RKlHPaY69k9fNnCIgIMa7aeAaHZgvLMXgAu-FrPghas",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-16": {
+      "bpSheetId": "1JwqgLrbwgaYd-IIO_w4unx0UvlmzlIfAQ3LgT_mOqXc",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1ggGNVcN-MhmpKIYrpee1NwEDSNySPOomFvckEFYVRds",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-18": {
+      "bpSheetId": "1HSvfGvO0ZxWm2iELcubJSK1_qs4zjHG5cERk7kdXnwo",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1mS9AC8Dqft_tiVhb6QWoXMIDv1GaDh2Boc9IzHYQU1k",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-19": {
+      "bpSheetId": "1YXThoSnYUFcf9FWGXCZI5DBEZEO34DaudjCqWIUcvlo",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1yqlzOffzJstyjYPvMstUzt_eY-vJjofM1Ha-l23T2rc",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-20": {
+      "bpSheetId": "16r91h2HLay81OMjRgwTvDzyQO2uTMK3lRd6KUgVqoWg",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1ZjsJXY9oO8_9rhUoiFPHKpo-zX13YYX27LAebZkT34Q",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-22": {
+      "bpSheetId": "1FYdqlIzfu1SyjGEAIHrajcTYflKpfo96dFmYqMiTkZ0",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1Nd0qt-ifd9qqiK2mVxQQyl2IBnCXDjqktTHEJMvf9sE",
+      "rdConvertedVersion": ""
+    },
+    "2026-05-24": {
+      "bpSheetId": "1V7WkyjmHyXEOW3Hdnakw7T6uWM6DpOe0xewqZs7x6_U",
+      "bpConvertedVersion": "",
+      "rdSheetId": "1Hzyc556Mxi4Lr5xY_BkH4WG6RHkOjNYtVKDdHyzgDrg",
+      "rdConvertedVersion": ""
+    }
+  },
+  "_savedAt": "2026-05-31T15:12:35.505Z",
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
