@@ -3334,21 +3334,48 @@ const GDrive = {
 
   // Get a valid access token — restores from IndexedDB to avoid flash on reload
   async getToken(interactive = false) {
+    // The required scope set — any persisted token that was granted a different
+    // (narrower) set of scopes will be discarded and re-requested.
+    // drive.readonly: lets the app list and read ALL files in the user's Drive,
+    //   including files uploaded externally or in previous OAuth sessions.
+    //   Replaces drive.file, which only exposes files this exact app instance created.
+    // drive.file: retained alongside drive.readonly so the app can still CREATE
+    //   converted-sheet files in the cache folder (drive.readonly is read-only).
+    // spreadsheets.readonly: read any Google Sheet the user owns via Sheets API v4.
+    const REQUIRED_SCOPES = [
+      'https://www.googleapis.com/auth/drive.readonly',
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/spreadsheets.readonly'
+    ];
+    const SCOPE_FINGERPRINT = REQUIRED_SCOPES.sort().join('|');
+
     // 1. Use in-memory token if still valid
     if (this.token && Date.now() < this.tokenExpiry - 60000) return this.token;
 
-    // 2. Try restoring persisted token from IndexedDB (avoids Google page flash)
+    // 2. Try restoring persisted token from IndexedDB (avoids Google page flash).
+    //    SCOPE CHECK: only reuse the cached token if it was granted the same scopes
+    //    that are currently required. A mismatch means the user previously consented
+    //    to a narrower scope set (e.g. only drive.file, without spreadsheets.readonly)
+    //    and that stale token would cause Sheets API calls to return HTTP 403.
     try {
       const saved = await DB.get('config', 'gdriveToken');
       if (saved && saved.token && saved.expiry && Date.now() < saved.expiry - 60000) {
-        this.token = saved.token;
-        this.tokenExpiry = saved.expiry;
-        this._updateUI(true);
-        return this.token;
+        if (saved.scopeFingerprint === SCOPE_FINGERPRINT) {
+          this.token = saved.token;
+          this.tokenExpiry = saved.expiry;
+          this._updateUI(true);
+          return this.token;
+        } else {
+          // Scopes changed since this token was granted — discard it.
+          // The user will be prompted to consent to the new scope set.
+          AppLog.add('OAuth', 'Cached token scope mismatch — forcing re-auth', 'WARN',
+            `Stored: ${saved.scopeFingerprint || '(none)'} | Required: ${SCOPE_FINGERPRINT}`);
+          await DB.del('config', 'gdriveToken').catch(() => {});
+        }
       }
     } catch(e) { /* no saved token */ }
 
-    // 3. No cached token — if not interactive, bail immediately without loading GIS.
+    // 3. No valid cached token — if not interactive, bail without loading GIS.
     //    Loading GIS and calling requestAccessToken({prompt:'none'}) causes a visible
     //    redirect flash to accounts.google.com on mobile, causing the refresh loop.
     if (!interactive) throw new Error('no_cached_token');
@@ -3359,20 +3386,18 @@ const GDrive = {
     return new Promise((res, rej) => {
       const client = window.google.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        scope: [
-          'https://www.googleapis.com/auth/drive.file',
-          'https://www.googleapis.com/auth/spreadsheets.readonly'
-        ].join(' '),
+        scope: REQUIRED_SCOPES.join(' '),
         prompt: interactive ? 'select_account' : 'none',
         callback: async (resp) => {
           if (resp.error) { rej(new Error(resp.error)); return; }
           this.token = resp.access_token;
           this.tokenExpiry = Date.now() + (resp.expires_in || 3600) * 1000;
-          // Persist token so next page load skips silent auth flash
+          // Persist token WITH scope fingerprint so future restores can validate it
           try {
             await DB.set('config', 'gdriveToken', {
               token: this.token,
-              expiry: this.tokenExpiry
+              expiry: this.tokenExpiry,
+              scopeFingerprint: SCOPE_FINGERPRINT
             });
           } catch(e) {}
           this._updateUI(true, resp);
@@ -9676,10 +9701,22 @@ const App = {
       let token = (GDrive.token && GDrive.tokenExpiry > now) ? GDrive.token : null;
       if (!token) {
         const cached = await DB.get('config', 'gdriveToken').catch(() => null);
-        if (cached?.token && cached?.expiry > now) {
+        // Scope fingerprint check: must match GDrive.getToken's REQUIRED_SCOPES.
+        // A stale token (missing drive.readonly or spreadsheets.readonly) would cause
+        // Sheets API calls to silently return 403 — skip background sync instead.
+        const expectedFingerprint = [
+          'https://www.googleapis.com/auth/drive.file',
+          'https://www.googleapis.com/auth/drive.readonly',
+          'https://www.googleapis.com/auth/spreadsheets.readonly'
+        ].sort().join('|');
+        const scopeOk = cached?.scopeFingerprint === expectedFingerprint;
+        if (cached?.token && cached?.expiry > now && scopeOk) {
           token = cached.token;
           GDrive.token = token;
           GDrive.tokenExpiry = cached.expiry;
+        } else if (cached?.token && !scopeOk) {
+          AppLog.add('OAuth', 'Background sync skipped — cached token scope mismatch', 'WARN',
+            'Admin must sign in again to re-grant updated permissions');
         }
       }
       if (!token) {
