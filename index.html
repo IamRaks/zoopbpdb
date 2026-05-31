@@ -8287,15 +8287,11 @@ const ZoneSetupWizard = {
         await GDrive.syncNow(true);
         allDates = await DB.keys('fileIndex');
       } catch(e) {
-        this._prereqError('Drive sync failed: ' + e.message +
-          '
-Check that your BP Folder ID is set correctly in Data Source settings.');
+        this._prereqError('Drive sync failed: ' + e.message + ' — Check BP Folder ID in Data Source settings.');
         return;
       }
       if (!allDates.length) {
-        this._prereqError('No BP files found in your Drive folder.' +
-          '
-Upload BP files and ensure the folder ID is correct in Data Source settings.');
+        this._prereqError('No BP files found in your Drive folder. Upload BP files and ensure the folder ID is correct.');
         return;
       }
     }
@@ -8307,8 +8303,7 @@ Upload BP files and ensure the folder ID is correct in Data Source settings.');
                    allDates.sort().pop();
     const entry  = await DB.get('fileIndex', fyDate);
     if (!entry?.bpXlsxId && !entry?.bpSheetId) {
-      this._prereqError('No FY End BP file found.
-Upload a BP_31.03.YYYY.xlsx file to your Drive BP folder and retry.');
+      this._prereqError('No FY End BP file found. Upload a BP_31.03.YYYY.xlsx file to your Drive BP folder and retry.');
       return;
     }
     this._prereqProgress(55, 'FY End file: ' + (entry.bpName || fyDate), 'Finding FY End File');
@@ -8329,9 +8324,7 @@ Upload a BP_31.03.YYYY.xlsx file to your Drive BP folder and retry.');
         entry.bpSheetId = sheetId;
         AppLog.add('Region', 'Zone setup: FY End file converted', 'OK', `sheetId: ${sheetId}`);
       } catch(e) {
-        this._prereqError('FY End file conversion failed: ' + e.message +
-          '
-Check Drive permissions — the app needs editor access to your BP folder.');
+        this._prereqError('FY End file conversion failed: ' + e.message + ' — Check Drive permissions.');
         return;
       }
     }
@@ -8354,9 +8347,7 @@ Check Drive permissions — the app needs editor access to your BP folder.');
     ).catch(() => null);
 
     if (!sheetData) {
-      this._prereqError('Could not read FY End BP sheet.' +
-        '
-This may be a temporary Drive issue. Check your connection and retry.');
+      this._prereqError('Could not read FY End BP sheet. Check your connection and retry.');
       return;
     }
 
@@ -8370,9 +8361,7 @@ This may be a temporary Drive issue. Check your connection and retry.');
     )].sort();
 
     if (!zones.length) {
-      this._prereqError('No zone values found in ZO column of FY End BP file.' +
-        '
-Check that your BP file has a ZO column with zone names.');
+      this._prereqError('No zone values found in ZO column of FY End BP file. Check the ZO column.');
       return;
     }
 
