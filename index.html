@@ -12,16 +12,16 @@
 [data-theme="dark"]{
   --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;
   --nav:#0a0f1a;--nav2:#0f1623;--nav3:#1a2540;
-  --blue:#2f81f7;--blue2:#388bfd;
-  --accent:#f0a500;--accent2:#c8881a;
-  --green:#3fb950;--green-bg:rgba(63,185,80,.12);
-  --red:#f85149;--red-bg:rgba(248,81,73,.12);
-  --border:#30363d;--border2:#21262d;
-  --text:#e6edf3;--text2:#8b949e;--text3:#484f58;
+  --blue:#4d9fff;--blue2:#6ab4ff;
+  --accent:#f5b731;--accent2:#d9a020;
+  --green:#56d364;--green-bg:rgba(86,211,100,.15);
+  --red:#ff6b63;--red-bg:rgba(255,107,99,.15);
+  --border:#444c56;--border2:#30363d;
+  --text:#f0f6fc;--text2:#cdd9e5;--text3:#9aa7b4;
   --surface:#161b22;--surface2:#1c2128;
-  --tbl-even:#1c2128;--tbl-hover:#21262d;--tbl-curr:rgba(47,129,247,.08);
+  --tbl-even:#1c2128;--tbl-hover:#2a3140;--tbl-curr:rgba(77,159,255,.10);
   --sticky:#161b22;--sticky-even:#1c2128;
-  --shadow:0 4px 16px rgba(0,0,0,.4);--shadow-lg:0 8px 32px rgba(0,0,0,.6);
+  --shadow:0 4px 16px rgba(0,0,0,.5);--shadow-lg:0 8px 32px rgba(0,0,0,.7);
 }
 [data-theme="light"]{
   --bg:#f4f7fc;--bg2:#fff;--bg3:#eaf0fb;
@@ -7976,6 +7976,8 @@ const ZoneSetupWizard = {
   // ── Initialise wizard for a zone ─────────────────────────────
   async init(zone) {
     this.zone = zone;
+    // Always load the FY End file and populate zone dropdown
+    await this._loadFYEndAndPopulateZones();
     if (!zone) { this.goStep(1); return; }
     const setup = RegionRegistry.get(zone);
     if (setup) {
@@ -7983,11 +7985,12 @@ const ZoneSetupWizard = {
       this.draft.derivedLabel = setup.derivedRegions?.[0]?.label || 'UNDER ZO';
       this.draft.bpRegions = JSON.parse(JSON.stringify(setup.bpRegions || []));
       this.draft.rdMappings = JSON.parse(JSON.stringify(setup.rdMappings || []));
-      document.getElementById('derivedRegionLabel').value = this.draft.derivedLabel;
+      const lblEl = document.getElementById('derivedRegionLabel');
+      if (lblEl) lblEl.value = this.draft.derivedLabel;
     }
     // Show pending section if pending items exist
     this._renderPendingSection();
-    // If setup incomplete, start wizard; otherwise show summary
+    // If setup incomplete, start wizard; otherwise show summary at step 4
     if (!RegionRegistry.isSetupComplete(zone)) {
       this.goStep(1);
     } else {
@@ -8029,7 +8032,25 @@ const ZoneSetupWizard = {
   async onZoneSelected(zone) {
     Cfg.set('activeZone', zone);
     this.zone = zone;
-    await this.init(zone);
+    // Filter cached BP rows to selected zone (no refetch needed)
+    if (this._allBPRows) {
+      this._bpRows = this._allBPRows.filter(r => (r['ZO']||'').trim() === zone.trim());
+    }
+    const setup = RegionRegistry.get(zone);
+    if (setup) {
+      this.draft.derivedLabel = setup.derivedRegions?.[0]?.label || 'UNDER ZO';
+      this.draft.bpRegions = JSON.parse(JSON.stringify(setup.bpRegions || []));
+      this.draft.rdMappings = JSON.parse(JSON.stringify(setup.rdMappings || []));
+      const lblEl = document.getElementById('derivedRegionLabel');
+      if (lblEl) lblEl.value = this.draft.derivedLabel;
+    }
+    this._renderPendingSection();
+    if (!RegionRegistry.isSetupComplete(zone)) {
+      this.goStep(1);
+    } else {
+      this.goStep(4);
+      this._renderStep4();
+    }
   },
 
   // ── Navigate between steps ────────────────────────────────────
@@ -8058,7 +8079,9 @@ const ZoneSetupWizard = {
   async nextStep() {
     if (this.step === 1) {
       if (!this.zone) { this._status1('⚠ Please select a zone first.'); return; }
-      await this._loadBPRows();
+      // Ensure BP rows are loaded for selected zone
+      if (!this._bpRows || !this._bpRows.length) await this._loadBPRows();
+      if (!this._bpRows) { this._status1('⚠ Could not load BP data. Check Drive.'); return; }
       await this._renderStep2();
       this.goStep(2);
     } else if (this.step === 2) {
@@ -8083,30 +8106,147 @@ const ZoneSetupWizard = {
     if (el) el.textContent = msg;
   },
 
-  // ── Load BP rows from FY End file ─────────────────────────────
-  async _loadBPRows() {
-    this._status1('Loading FY End BP file...');
-    const zone = this.zone;
-    // Find FY End date (earliest -03-31 date in fileIndex)
+  // ── Load FY End BP file and populate zone dropdown ───────────
+  // Handles all three states:
+  //   A) fileIndex + token available → fetch zones via Sheets API
+  //   B) fileIndex available, no token → show Sign In button
+  //   C) no fileIndex → show Sync Drive button
+  async _loadFYEndAndPopulateZones() {
+    const sel = document.getElementById('zoneSelAdmin');
+    this._status1('Checking setup...');
+
+    // ── Check fileIndex ───────────────────────────────────────
     const allDates = await DB.keys('fileIndex');
+    if (!allDates.length) {
+      this._status1('');
+      this._showStep1Action(
+        '⚠ No files indexed yet.',
+        'Sync from Drive first to build the file index.',
+        '🔄 Sync from Drive',
+        async () => {
+          this._status1('Syncing from Drive...');
+          await GDrive.syncNow();
+          await this._loadFYEndAndPopulateZones();
+        }
+      );
+      return;
+    }
+
+    // ── Check token ──────────────────────────────────────────
+    const token = await GDrive.getToken(false).catch(() => null);
+    if (!token) {
+      this._status1('');
+      this._showStep1Action(
+        '⚠ Not signed in to Google Drive.',
+        'Sign in to load zone names from the FY End BP file.',
+        '🔑 Sign In to Drive',
+        async () => {
+          this._status1('Signing in...');
+          await GDrive.getToken(true).catch(() => null);
+          await this._loadFYEndAndPopulateZones();
+        }
+      );
+      return;
+    }
+
+    // ── Find FY End date ─────────────────────────────────────
     const fyDate = allDates.filter(d => d.endsWith('-03-31')).sort()[0] ||
                    allDates.sort()[0];
-    if (!fyDate) { this._status1('⚠ No FY End file found. Sync Drive first.'); return; }
-
     const entry = await DB.get('fileIndex', fyDate);
-    if (!entry?.bpSheetId) { this._status1('⚠ FY End BP sheet not converted yet. Run Sync first.'); return; }
+
+    // ── Check sheet is converted ─────────────────────────────
+    if (!entry?.bpSheetId) {
+      this._status1('');
+      this._showStep1Action(
+        '⚠ FY End BP file not yet converted to Google Sheets.',
+        'Convert the FY End file to load zone names.',
+        '⚙ Convert FY End File',
+        async () => {
+          this._status1('Converting FY End file...');
+          const cacheFolderId = await GDrive._getOrCreateCacheFolder(token);
+          const sheetId = await GDrive.convertFile(token, entry.bpXlsxId, entry.bpName, cacheFolderId);
+          if (sheetId) {
+            await DB.set('fileIndex', fyDate, { ...entry, bpSheetId: sheetId, bpConverted: true });
+            await this._loadFYEndAndPopulateZones();
+          } else {
+            this._status1('⚠ Conversion failed. Check Drive access and try again.');
+          }
+        }
+      );
+      return;
+    }
+
+    // ── All clear — fetch BP file and extract zones ──────────
+    this._status1('Loading FY End BP file...');
+    this._clearStep1Action();
 
     const sheetData = await SheetsAPI.buildBPFromSheet(
-      entry.bpSheetId, fyDate, zone, {}
+      entry.bpSheetId, fyDate, null, {}
     ).catch(() => null);
 
-    if (!sheetData) { this._status1('⚠ Could not load FY End BP file. Check Drive access.'); return; }
+    if (!sheetData) {
+      this._status1('⚠ Could not load FY End BP file. Check Drive access.');
+      return;
+    }
 
+    // Cache all rows for later use in Step 2
     const fs = Object.values(sheetData.sheets)[0];
-    this._bpRows = (fs?.rows || []).filter(r => (r['ZO']||'').trim() === zone.trim());
+    this._allBPRows = fs?.rows || [];
     this._fyDate = fyDate;
     this._fyBPFile = entry.bpName || fyDate;
-    this._status1(`✓ Loaded ${this._bpRows.length} rows from ${this._fyBPFile}`);
+
+    // Extract unique ZO values
+    const zones = [...new Set(
+      this._allBPRows.map(r => (r['ZO']||'').trim()).filter(z => z && z !== 'Total')
+    )].sort();
+
+    if (!zones.length) {
+      this._status1('⚠ No zone values found in ZO column of FY End BP file.');
+      return;
+    }
+
+    // Populate dropdown
+    const cur = Cfg.get('activeZone') || '';
+    sel.innerHTML = '<option value="">— Select Zone —</option>' +
+      zones.map(z => `<option value="${z}" ${z===cur?'selected':''}>${z}</option>`).join('');
+
+    this._status1(`✓ ${zones.length} zone(s) loaded from ${this._fyBPFile}`);
+
+    // If zone already set, auto-select and proceed
+    if (cur && zones.includes(cur)) {
+      this.zone = cur;
+      this._bpRows = this._allBPRows.filter(r => (r['ZO']||'').trim() === cur.trim());
+    }
+  },
+
+  // ── Show inline action button in Step 1 ─────────────────────
+  _showStep1Action(heading, desc, btnLabel, onClick) {
+    const el = document.getElementById('zoneStep1Status');
+    if (!el) return;
+    el.innerHTML = `
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px">
+        <div style="font-weight:600;color:var(--accent);margin-bottom:4px">${heading}</div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:10px">${desc}</div>
+        <button class="btn-p" style="font-size:12px;width:100%" id="step1ActionBtn">${btnLabel}</button>
+      </div>`;
+    document.getElementById('step1ActionBtn').addEventListener('click', onClick);
+  },
+
+  _clearStep1Action() {
+    const el = document.getElementById('zoneStep1Status');
+    if (el) el.innerHTML = '';
+  },
+
+  // ── Load BP rows filtered to selected zone (for Step 2) ──────
+  async _loadBPRows() {
+    if (!this.zone) { this._status1('⚠ Please select a zone first.'); return; }
+    if (!this._allBPRows) {
+      // Not yet loaded — load now
+      await this._loadFYEndAndPopulateZones();
+      if (!this._allBPRows) return;
+    }
+    this._bpRows = this._allBPRows.filter(r => (r['ZO']||'').trim() === this.zone.trim());
+    this._status1(`✓ ${this._bpRows.length} rows loaded for zone ${this.zone}`);
   },
 
   // ── Load RD rows from FY End file ─────────────────────────────
