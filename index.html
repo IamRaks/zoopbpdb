@@ -838,8 +838,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <!-- Error state -->
     <div id="prereqError" style="display:none;margin-top:4px;margin-bottom:10px;padding:10px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font-size:11px;color:var(--red);text-align:left"></div>
     <!-- Retry + Cancel row -->
-    <div id="prereqBtnRow" style="display:none;gap:8px;display:none">
-      <button class="btn-p" style="flex:1;font-size:12px" onclick="ZoneSetupWizard._ensureReady()">↺ Retry</button>
+    <div id="prereqBtnRow" style="display:none;gap:8px">
+      <button class="btn-p" style="flex:1;font-size:12px" onclick="ZoneSetupWizard._prereqRetry()">↺ Retry</button>
       <button class="btn-s" style="flex:1;font-size:12px" onclick="ZoneSetupWizard._prereqCancel()">✕ Cancel</button>
     </div>
     <!-- Cancel-only button (shown during auto progress so admin can escape) -->
@@ -2141,9 +2141,12 @@ const SheetsAPI = {
       // ── end schema validation ────────────────────────────────────
 
       // ── Filter rows for this zone ────────────────────────────────
-      const zoneTrimmed = zone.trim().toUpperCase();
+      // When zone is null/empty, return ALL rows (used for zone-name discovery
+      // during initial setup — we need every unique ZO value).
+      const zoneTrimmed = zone ? zone.trim().toUpperCase() : null;
       const dataRows = rows.slice(headerIdx + 1).filter(r => {
         if (!r || !r[0]) return false;
+        if (!zoneTrimmed) return true; // no zone filter — return all rows
         const cellVal = String(r[0]).trim().toUpperCase();
         return cellVal === zoneTrimmed;
       });
@@ -8201,16 +8204,18 @@ const ZoneSetupWizard = {
     if (ov) ov.style.display = 'none';
   },
 
-  // Admin explicitly cancelled — dismiss overlay, show inline status, set flag
+  // Admin explicitly cancelled — dismiss overlay, abort any running flow,
+  // show inline status. Does NOT call showSec (which would re-trigger _ensureReady).
   _prereqCancel() {
     this._prereqCancelled = true;
+    this._prereqAborted = true; // signals any in-flight _ensureReadyAfterSignIn to stop
     this._prereqHide();
-    Admin.showSec('zone');
-    this._status1(
-      '⚠ Zone setup incomplete. Drive access is required. ' +
-      'Click "Load Zones" when ready to try again.'
-    );
-    // Replace status1 with a persistent message + Try Again button
+    // Switch to Zone section WITHOUT calling showSec (avoids re-trigger loop)
+    document.querySelectorAll('.anav-item').forEach(el =>
+      el.classList.toggle('active', el.dataset.sec === 'zone'));
+    document.querySelectorAll('.asec').forEach(el =>
+      el.classList.toggle('active', el.id === 'asec-zone'));
+    // Show persistent inline message + Load Zones button
     const el = document.getElementById('zoneStep1Status');
     if (el) el.innerHTML = `
       <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;
@@ -8218,14 +8223,21 @@ const ZoneSetupWizard = {
         <div style="font-weight:600;color:var(--accent);margin-bottom:4px">
           ⚠ Zone setup paused</div>
         <div style="font-size:11px;color:var(--text2);margin-bottom:10px;line-height:1.6">
-          Google Drive access is required to load zone names from the FY End BP file.
-          Sign in to Drive in the Data Source tab, then click the button below.</div>
+          Loading was cancelled. Click below to try loading zone names again.</div>
         <button class="btn-p" style="font-size:12px;width:100%"
-          onclick="ZoneSetupWizard._prereqCancelled=false;ZoneSetupWizard._ensureReady()">
+          onclick="ZoneSetupWizard._prereqRetry()">
           🔄 Load Zones</button>
       </div>`;
     AppLog.add('Region', 'Zone setup prerequisite cancelled by admin', 'WARN',
       'Admin can retry by clicking Load Zones in Zone tab');
+  },
+
+  // Retry from the Load Zones inline button — reset flags and run
+  _prereqRetry() {
+    this._prereqCancelled = false;
+    this._prereqAborted = false;
+    this._allBPRows = null;
+    this._ensureReady();
   },
 
   // Called when user clicks the primary action button in the overlay
@@ -8275,6 +8287,7 @@ const ZoneSetupWizard = {
   },
 
   async _ensureReadyAfterSignIn(token) {
+    this._prereqAborted = false; // reset abort flag at start of a fresh run
     // ── Step B: File index ────────────────────────────────────
     this._prereqShow('⚙', 'Syncing Drive', 'Checking file index...', '', true);
     this._prereqProgress(10, 'Checking file index...', 'Syncing Drive');
@@ -8285,8 +8298,10 @@ const ZoneSetupWizard = {
       AppLog.add('Region', 'Zone setup: auto-syncing Drive', 'RUN', '');
       try {
         await GDrive.syncNow(true);
+        if (this._prereqAborted) return; // admin cancelled
         allDates = await DB.keys('fileIndex');
       } catch(e) {
+        if (this._prereqAborted) return;
         this._prereqError('Drive sync failed: ' + e.message + ' — Check BP Folder ID in Data Source settings.');
         return;
       }
@@ -8324,10 +8339,12 @@ const ZoneSetupWizard = {
         entry.bpSheetId = sheetId;
         AppLog.add('Region', 'Zone setup: FY End file converted', 'OK', `sheetId: ${sheetId}`);
       } catch(e) {
+        if (this._prereqAborted) return;
         this._prereqError('FY End file conversion failed: ' + e.message + ' — Check Drive permissions.');
         return;
       }
     }
+    if (this._prereqAborted) return; // admin cancelled during conversion
     this._prereqProgress(72, 'FY End sheet ready', 'Converting FY End File');
 
     // ── Step E: Fetch BP data — re-verify token first ─────────
@@ -8344,7 +8361,9 @@ const ZoneSetupWizard = {
 
     const sheetData = await SheetsAPI.buildBPFromSheet(
       entry.bpSheetId, fyDate, null, {}
-    ).catch(() => null);
+    ).catch((e) => { AppLog.add('Region','buildBPFromSheet error','ERR',e.message); return null; });
+
+    if (this._prereqAborted) return; // admin cancelled during fetch
 
     if (!sheetData) {
       this._prereqError('Could not read FY End BP sheet. Check your connection and retry.');
