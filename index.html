@@ -2312,6 +2312,15 @@ const SheetsAPI = {
     if (!sheetNames) {
       const r = await this.getSheetNames(sheetId);
       sheetNames = r.names || [];
+      if (!sheetNames.length) {
+        // Log the actual reason so admin can see it in Admin Log
+        AppLog.add('Sheets', `buildBPFromSheet: getSheetNames returned empty — ${dateStr}`, 'ERR',
+          `sheetId=${sheetId ? sheetId.substring(0,20) : 'null'} | error=${r.error || 'none'} | ` +
+          `Possible causes: (1) sheetId is an XLSX file ID not a Google Sheet, ` +
+          `(2) sheet was deleted from Drive cache folder, ` +
+          `(3) Sheets API 403 — token missing spreadsheets.readonly scope`);
+        return null;
+      }
     }
     if (!sheetNames.length) return null;
     const result = { date: dateStr, sheets: {}, unit: 'lacs', fromSheets: true };
@@ -3408,15 +3417,14 @@ const GDrive = {
   async getToken(interactive = false) {
     // The required scope set — any persisted token that was granted a different
     // (narrower) set of scopes will be discarded and re-requested.
-    // drive.readonly: lets the app list and read ALL files in the user's Drive,
-    //   including files uploaded externally or in previous OAuth sessions.
-    //   Replaces drive.file, which only exposes files this exact app instance created.
-    // drive.file: retained alongside drive.readonly so the app can still CREATE
-    //   converted-sheet files in the cache folder (drive.readonly is read-only).
+    // drive.readonly: list and read ALL files the user owns, regardless of who uploaded them.
+    // drive: full read/write access — required for /copy, folder creation, and file writes.
+    //   drive.file was previously used here but it only covers files this app instance created,
+    //   so /copy of externally-uploaded XLSX files silently returned null and bpSheetId was
+    //   never set, causing "Could not read FY End BP sheet" every time.
     // spreadsheets.readonly: read any Google Sheet the user owns via Sheets API v4.
     const REQUIRED_SCOPES = [
-      'https://www.googleapis.com/auth/drive.readonly',
-      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/drive',
       'https://www.googleapis.com/auth/spreadsheets.readonly'
     ];
     const SCOPE_FINGERPRINT = REQUIRED_SCOPES.sort().join('|');
@@ -8575,6 +8583,11 @@ const ZoneSetupWizard = {
       return;
     }
     this._prereqProgress(55, 'FY End file: ' + (entry.bpName || fyDate), 'Finding FY End File');
+    AppLog.add('Region', 'Zone setup: FY End file selected', 'INF',
+      `fyDate=${fyDate} | bpName=${entry.bpName||'?'} | ` +
+      `bpSheetId=${entry.bpSheetId ? entry.bpSheetId.substring(0,20) : 'NONE'} | ` +
+      `bpXlsxId=${entry.bpXlsxId ? entry.bpXlsxId.substring(0,20) : 'NONE'} | ` +
+      `bpConverted=${entry.bpConverted||false} | allDates=[${allDates.slice(0,5).join(', ')}${allDates.length>5?'…':''}]`);
 
     // ── Step D: Convert if needed ─────────────────────────────
     if (!entry.bpSheetId) {
@@ -8615,6 +8628,13 @@ const ZoneSetupWizard = {
     const sheetData = await SheetsAPI.buildBPFromSheet(
       entry.bpSheetId, fyDate, null, {}
     ).catch((e) => { AppLog.add('Region','buildBPFromSheet error','ERR',e.message); return null; });
+
+    // Log what we tried to read — visible in Admin Log to diagnose failures
+    AppLog.add('Region', 'Zone setup: attempted buildBPFromSheet', sheetData ? 'OK' : 'ERR',
+      `fyDate=${fyDate} | bpName=${entry.bpName||'?'} | ` +
+      `bpSheetId=${entry.bpSheetId ? entry.bpSheetId.substring(0,20) : 'NULL'} | ` +
+      `bpXlsxId=${entry.bpXlsxId ? entry.bpXlsxId.substring(0,20) : 'null'} | ` +
+      `bpConverted=${entry.bpConverted} | result=${sheetData ? (sheetData.__authError ? 'authError:'+sheetData.error : 'ok:'+Object.keys(sheetData.sheets||{}).length+'sheets') : 'null'}`);
 
     if (this._prereqAborted) return; // admin cancelled during fetch
 
@@ -9794,11 +9814,11 @@ const App = {
       if (!token) {
         const cached = await DB.get('config', 'gdriveToken').catch(() => null);
         // Scope fingerprint check: must match GDrive.getToken's REQUIRED_SCOPES.
-        // A stale token (missing drive.readonly or spreadsheets.readonly) would cause
-        // Sheets API calls to silently return 403 — skip background sync instead.
+        // drive.file was previously used but cannot /copy externally-uploaded files,
+        // causing silent null from convertFile and "Could not read FY End BP sheet".
+        // Now requires full drive scope for read+write on any file.
         const expectedFingerprint = [
-          'https://www.googleapis.com/auth/drive.file',
-          'https://www.googleapis.com/auth/drive.readonly',
+          'https://www.googleapis.com/auth/drive',
           'https://www.googleapis.com/auth/spreadsheets.readonly'
         ].sort().join('|');
         const scopeOk = cached?.scopeFingerprint === expectedFingerprint;
