@@ -1649,12 +1649,50 @@ const Cfg = {
       out.periods[k] = Object.assign({}, def.periods[k], (stored.periods||{})[k]||{});
     if (!out.columnOrder || !out.columnOrder.length)
       out.columnOrder = JSON.parse(JSON.stringify(def.columnOrder));
-    // Safeguard: critical keys must never be blanked by a partial/corrupt stored config.
-    // If Object.assign overwrote a good stored value with an empty default, restore it.
-    const critical = ['ghUsername','ghRepo','activeZone','gClientId','gBpFolderId','gRdFolderId','gApiKey'];
-    for (const k of critical) {
+
+    // ── Defensive merge: critical string fields ──────────────────
+    // Object.assign above copies stored over def, but if stored has a blank/null
+    // for a field that def also blanks, the good value can be lost.
+    // These fields must never be blanked by a partial or corrupt stored config.
+    const criticalStrings = [
+      'ghUsername','ghRepo','activeZone','gClientId',
+      'gBpFolderId','gRdFolderId','gApiKey'
+    ];
+    for (const k of criticalStrings) {
       if (!out[k] && stored[k]) out[k] = stored[k];
     }
+
+    // ── Defensive merge: fileIndexSheetIds ───────────────────────
+    // This object stores Drive sheet IDs for every converted XLSX date.
+    // It must NEVER be overwritten by an empty {} from a default or stale config.
+    // Rule: always deep-merge — keep the union of def + stored + existing Cfg.d entries.
+    // This protects against the following scenario:
+    //   1. Admin converts sheets → fileIndexSheetIds populated in Cfg.d and pushed to GitHub
+    //   2. Scope change forces re-auth → fresh sync runs → config.json pushed with empty {}
+    //   3. autoLoad pulls config.json → _merge called → fileIndexSheetIds wiped → IDs lost
+    //      → wizard runs convertFile again → dedup FIND query returns empty → failure
+    const defIds    = def.fileIndexSheetIds    || {};
+    const storedIds = stored.fileIndexSheetIds || {};
+    const liveIds   = (this.d && this.d.fileIndexSheetIds) || {};  // what's in memory right now
+    // Union: start with def (always {}), layer stored on top, layer live memory on top
+    // Live memory wins because it has the freshest conversions not yet pushed to GitHub
+    out.fileIndexSheetIds = Object.assign({}, defIds, storedIds, liveIds);
+    // Per-entry deep merge: don't let a stored entry with only bpSheetId
+    // erase an existing rdSheetId that was only in liveIds (or vice versa)
+    const allDateKeys = new Set([
+      ...Object.keys(defIds),
+      ...Object.keys(storedIds),
+      ...Object.keys(liveIds)
+    ]);
+    for (const dk of allDateKeys) {
+      out.fileIndexSheetIds[dk] = Object.assign(
+        {},
+        defIds[dk]    || {},
+        storedIds[dk] || {},
+        liveIds[dk]   || {}   // live memory is authoritative
+      );
+    }
+
     return out;
   },
   async save(){
@@ -2064,23 +2102,26 @@ const ConfigSync = {
         if (pat) await DB.set('config', 'ghPat', pat);
         delete cfg._ghPat; // don't store raw PAT in Cfg.d
       }
-      // Restore sheet IDs to fileIndex — prevents reconversion after data clear
+      // Restore sheet IDs to fileIndex — prevents reconversion after data clear.
+      // Always apply IDs from config.json regardless of bpConverted flag —
+      // the saved ID in config.json is authoritative (it was written when conversion succeeded).
+      // Skipping when bpConverted=true caused stale IDs to persist after sheet deletion.
       const sheetIds = cfg.fileIndexSheetIds || {};
       for (const [dk, ids] of Object.entries(sheetIds)) {
         try {
           const existing = await DB.get('fileIndex', dk) || {};
           let changed = false;
-          if (ids.bpSheetId && !existing.bpConverted) {
-            existing.bpSheetId = ids.bpSheetId;
+          if (ids.bpSheetId) {
+            existing.bpSheetId  = ids.bpSheetId;
             existing.bpConverted = true;
-            existing.bpStale = false;
+            existing.bpStale    = false;
             if (ids.bpConvertedVersion) existing.bpVersion = ids.bpConvertedVersion;
             changed = true;
           }
-          if (ids.rdSheetId && !existing.rdConverted) {
-            existing.rdSheetId = ids.rdSheetId;
+          if (ids.rdSheetId) {
+            existing.rdSheetId  = ids.rdSheetId;
             existing.rdConverted = true;
-            existing.rdStale = false;
+            existing.rdStale    = false;
             if (ids.rdConvertedVersion) existing.rdVersion = ids.rdConvertedVersion;
             changed = true;
           }
@@ -2969,7 +3010,7 @@ const XLSXConverter = {
       `and mimeType='application/vnd.google-apps.folder' and trashed=false`
     );
     const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`,
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     if (r.ok) {
@@ -2981,7 +3022,7 @@ const XLSXConverter = {
       }
     }
     // Create subfolder under correct parent
-    const cr = await fetch('https://www.googleapis.com/drive/v3/files', {
+    const cr = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2997,43 +3038,134 @@ const XLSXConverter = {
     return cd.id;
   },
 
-  // Convert one XLSX file to Google Sheets format via Drive copy API
-  // Idempotent: checks for existing Sheet with same name first
+  // Convert one XLSX file to Google Sheets format via Drive import API
+  // Idempotent: checks for existing Sheet with same name first.
+  // NOTE: Drive /copy ignores the mimeType field — it always copies as the source type.
+  //       The only correct way to get a Google Sheet from an XLSX is to:
+  //       1. Download the XLSX binary
+  //       2. Re-upload it via multipart import with mimeType=google-apps.spreadsheet
+  //       This forces Drive to perform the XLSX→Sheet conversion server-side.
   async convertFile(token, xlsxFileId, name, cacheFolderId) {
     try {
-      // Drive strips the .xlsx extension when converting to a Sheet.
-      // Use the extension-free name for both the dedup check and the copy request
-      // so they match — otherwise the check never finds the existing sheet and
-      // a duplicate is created on every rebuild.
       const sheetName = name.replace(/\.xlsx$/i, '');
-      // Check if a Sheet with this name already exists in the cache folder
+
+      // ── Step 1: Dedup check — search for existing Google Sheet by name ──
+      // Searches ONLY for Google Sheets (not XLSX copies) — if a previous /copy
+      // created an XLSX with this name, it won't match and we'll correctly re-convert.
       const q = encodeURIComponent(
         `name='${sheetName}' and '${cacheFolderId}' in parents ` +
         `and mimeType='${this.MIME_SHEET}' and trashed=false`
       );
       const check = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`,
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (check.ok) {
         const existing = await check.json();
         if (existing.files?.[0]?.id) {
           console.log(`Sheet already exists for ${sheetName}, reusing`);
-          return existing.files[0].id; // reuse existing — no duplicate
+          return existing.files[0].id;
         }
       }
-      // Not found — create the copy
-      const r = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${xlsxFileId}/copy`,
+
+      // ── Step 2: Delete any stale XLSX copy with the same name ──────────
+      // A previous broken /copy call may have left an XLSX file named "BP_31.03.2026"
+      // in the cache folder. If left, it pollutes future dedup checks for XLSX mimeType.
+      // Clean it up before creating the correct Google Sheet version.
+      const staleQ = encodeURIComponent(
+        `name='${sheetName}' and '${cacheFolderId}' in parents ` +
+        `and mimeType='${this.MIME_XLSX}' and trashed=false`
+      );
+      const staleCheck = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${staleQ}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (staleCheck.ok) {
+        const stale = await staleCheck.json();
+        for (const f of (stale.files || [])) {
+          // Trash the stale XLSX copy — don't permanently delete in case of mistakes
+          await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?supportsAllDrives=true`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trashed: true })
+          }).catch(() => {});
+          AppLog.add('Drive API', `Trashed stale XLSX copy — ${sheetName}`, 'WARN',
+            `id=${f.id.substring(0,12)} — was created by old /copy conversion bug`);
+        }
+      }
+
+      // ── Step 3: Download the XLSX binary ────────────────────────────────
+      const dlResp = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${xlsxFileId}?alt=media&supportsAllDrives=true`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!dlResp.ok) {
+        AppLog.add('Drive API', `Convert: XLSX download failed — ${sheetName}`, 'ERR',
+          `HTTP ${dlResp.status}`);
+        return null;
+      }
+      const xlsxBytes = await dlResp.arrayBuffer();
+
+      // ── Step 4: Re-upload as Google Sheet via multipart import ──────────
+      // Setting mimeType=google-apps.spreadsheet on the METADATA part of a multipart
+      // upload is the correct way to convert — Drive performs the conversion server-side.
+      // This is fundamentally different from /copy which ignores mimeType entirely.
+      const metadata = JSON.stringify({
+        name: sheetName,
+        mimeType: this.MIME_SHEET,
+        parents: [cacheFolderId]
+      });
+      const boundary = 'boundary_' + Math.random().toString(36).slice(2);
+      const delimiter = `\r\n--${boundary}\r\n`;
+      const closeDelimiter = `\r\n--${boundary}--`;
+
+      // Build multipart body: metadata part + binary part
+      const metaPart = delimiter +
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        metadata;
+      const metaBytes = new TextEncoder().encode(metaPart);
+      const binaryHeader = new TextEncoder().encode(
+        `\r\n--${boundary}\r\n` +
+        `Content-Type: ${this.MIME_XLSX}\r\n\r\n`
+      );
+      const closeBytes = new TextEncoder().encode(closeDelimiter);
+
+      // Concatenate all parts into a single Uint8Array
+      const body = new Uint8Array(
+        metaBytes.byteLength + binaryHeader.byteLength + xlsxBytes.byteLength + closeBytes.byteLength
+      );
+      let offset = 0;
+      body.set(metaBytes,                       offset); offset += metaBytes.byteLength;
+      body.set(binaryHeader,                    offset); offset += binaryHeader.byteLength;
+      body.set(new Uint8Array(xlsxBytes),       offset); offset += xlsxBytes.byteLength;
+      body.set(closeBytes,                      offset);
+
+      const uploadResp = await fetch(
+        `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true`,
         {
           method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: sheetName, mimeType: this.MIME_SHEET, parents: [cacheFolderId] })
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': `multipart/related; boundary=${boundary}`
+          },
+          body: body
         }
       );
-      if (!r.ok) { console.warn(`Convert ${name}: HTTP ${r.status}`); return null; }
-      return (await r.json()).id || null;
+
+      if (!uploadResp.ok) {
+        const errText = await uploadResp.text().catch(() => '');
+        AppLog.add('Drive API', `Convert: multipart upload failed — ${sheetName}`, 'ERR',
+          `HTTP ${uploadResp.status}: ${errText.substring(0, 120)}`);
+        return null;
+      }
+
+      const created = await uploadResp.json();
+      AppLog.add('Drive API', `Convert: XLSX→Sheet import complete — ${sheetName}`, 'OK',
+        `sheetId=${created.id ? created.id.substring(0,12) : '?'}`);
+      return created.id || null;
+
     } catch(e) {
+      AppLog.add('Drive API', `convertFile exception — ${name}`, 'ERR', e.message);
       console.warn(`Convert ${name} error:`, e.message);
       return null;
     }
@@ -3536,7 +3668,7 @@ const GDrive = {
       const token = await this.getToken(false).catch(() => null);
       if (!token) return null;
       const r = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=parents`,
+        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=parents&supportsAllDrives=true`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!r.ok) return null;
@@ -3557,7 +3689,7 @@ const GDrive = {
       : "name contains 'RD_'";
     const mimeFilter = "(mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType='application/vnd.google-apps.spreadsheet')";
     const q = encodeURIComponent(`'${folderId}' in parents and ${mimeFilter} and trashed=false and (${nameFilter})`);
-    let url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name,mimeType,modifiedTime,version)&pageSize=1000`;
+    let url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=nextPageToken,files(id,name,mimeType,modifiedTime,version)&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true`;
     if (pageToken) url += `&pageToken=${encodeURIComponent(pageToken)}`;
     const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
     if (!resp.ok) throw new Error(`Drive list error: ${resp.status}`);
@@ -3584,7 +3716,7 @@ const GDrive = {
       return await this._downloadGoogleSheetAsXLSX(fileId, token);
     }
     const resp = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     if (!resp.ok) {
@@ -3598,7 +3730,7 @@ const GDrive = {
   // alt=media cannot be used on native Google Sheets — they must be exported.
   async _downloadGoogleSheetAsXLSX(sheetId, token) {
     const exportUrl = `https://www.googleapis.com/drive/v3/files/${sheetId}/export` +
-      `?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`;
+      `?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet&supportsAllDrives=true`;
     try {
       const resp = await fetch(exportUrl, { headers: { Authorization: `Bearer ${token}` } });
       if (resp.status === 401 || resp.status === 403) {
@@ -5575,7 +5707,7 @@ const SummaryMgr = {
   async _findFile(token, folderId, name) {
     const q = encodeURIComponent(`name='${name}' and '${folderId}' in parents and trashed=false`);
     const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,modifiedTime)`,
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
       { headers:{ Authorization:`Bearer ${token}` } }
     );
     if (!r.ok) return null;
