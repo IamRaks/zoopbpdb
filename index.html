@@ -1649,50 +1649,17 @@ const Cfg = {
       out.periods[k] = Object.assign({}, def.periods[k], (stored.periods||{})[k]||{});
     if (!out.columnOrder || !out.columnOrder.length)
       out.columnOrder = JSON.parse(JSON.stringify(def.columnOrder));
-
-    // ── Defensive merge: critical string fields ──────────────────
-    // Object.assign above copies stored over def, but if stored has a blank/null
-    // for a field that def also blanks, the good value can be lost.
-    // These fields must never be blanked by a partial or corrupt stored config.
-    const criticalStrings = [
-      'ghUsername','ghRepo','activeZone','gClientId',
-      'gBpFolderId','gRdFolderId','gApiKey'
-    ];
-    for (const k of criticalStrings) {
+    // Safeguard: critical keys must never be blanked by a partial/corrupt stored config.
+    // If Object.assign overwrote a good stored value with an empty default, restore it.
+    const critical = ['ghUsername','ghRepo','activeZone','gClientId','gBpFolderId','gRdFolderId','gApiKey'];
+    for (const k of critical) {
       if (!out[k] && stored[k]) out[k] = stored[k];
     }
-
-    // ── Defensive merge: fileIndexSheetIds ───────────────────────
-    // This object stores Drive sheet IDs for every converted XLSX date.
-    // It must NEVER be overwritten by an empty {} from a default or stale config.
-    // Rule: always deep-merge — keep the union of def + stored + existing Cfg.d entries.
-    // This protects against the following scenario:
-    //   1. Admin converts sheets → fileIndexSheetIds populated in Cfg.d and pushed to GitHub
-    //   2. Scope change forces re-auth → fresh sync runs → config.json pushed with empty {}
-    //   3. autoLoad pulls config.json → _merge called → fileIndexSheetIds wiped → IDs lost
-    //      → wizard runs convertFile again → dedup FIND query returns empty → failure
-    const defIds    = def.fileIndexSheetIds    || {};
-    const storedIds = stored.fileIndexSheetIds || {};
-    const liveIds   = (this.d && this.d.fileIndexSheetIds) || {};  // what's in memory right now
-    // Union: start with def (always {}), layer stored on top, layer live memory on top
-    // Live memory wins because it has the freshest conversions not yet pushed to GitHub
-    out.fileIndexSheetIds = Object.assign({}, defIds, storedIds, liveIds);
-    // Per-entry deep merge: don't let a stored entry with only bpSheetId
-    // erase an existing rdSheetId that was only in liveIds (or vice versa)
-    const allDateKeys = new Set([
-      ...Object.keys(defIds),
-      ...Object.keys(storedIds),
-      ...Object.keys(liveIds)
-    ]);
-    for (const dk of allDateKeys) {
-      out.fileIndexSheetIds[dk] = Object.assign(
-        {},
-        defIds[dk]    || {},
-        storedIds[dk] || {},
-        liveIds[dk]   || {}   // live memory is authoritative
-      );
+    // fileIndexSheetIds: never replace a populated object with an empty one.
+    // An empty {} in a stale config.json must not wipe locally-known sheet IDs.
+    if (stored.fileIndexSheetIds && Object.keys(stored.fileIndexSheetIds).length > 0) {
+      out.fileIndexSheetIds = Object.assign({}, def.fileIndexSheetIds || {}, stored.fileIndexSheetIds);
     }
-
     return out;
   },
   async save(){
@@ -1724,48 +1691,17 @@ const Parser = {
   isCount(col){return /\bcount\b/i.test(col||'');},
 
   parseBP(buf,fname){
-    // ── Structural validation ────────────────────────────────────
-    // Guard against null/empty buffers, corrupt XLSX data, or files
-    // that arrived as empty exports from the Google Sheet export path.
-    if(!buf||buf.byteLength===0){
-      AppLog.add('Parser',`parseBP: empty buffer — ${fname}`,'ERR','File has 0 bytes; skipping');
-      return null;
-    }
-    let wb;
-    try{
-      wb=XLSX.read(buf,{type:'array'});
-    }catch(err){
-      AppLog.add('Parser',`parseBP: XLSX.read failed — ${fname}`,'ERR',err.message);
-      console.error('SheetJS parseBP error:',fname,err);
-      return null;
-    }
-    if(!wb||!wb.SheetNames||wb.SheetNames.length===0){
-      AppLog.add('Parser',`parseBP: workbook has no sheets — ${fname}`,'ERR','Empty or invalid XLSX structure');
-      return null;
-    }
-    // ── End structural validation ────────────────────────────────
+    const wb=XLSX.read(buf,{type:'array'});
     const date=this.dateFromName(fname,'BP');
     const result={date,sheets:{},unit:'lacs'};
     wb.SheetNames.forEach(sn=>{
       const ws=wb.Sheets[sn];
-      // Skip sheets that are completely empty (no cell keys)
-      if(!ws||Object.keys(ws).filter(k=>!k.startsWith('!')).length===0){
-        AppLog.add('Parser',`parseBP: sheet "${sn}" is empty — skipped`,'WARN',fname);
-        return;
-      }
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
       // BP: Row0=title, Row1=footnote(unit), Row2=headers, Row3+=data
       const foot=(rows[1]||[]).filter(Boolean).join(' ');
       const unit=this.detectUnit(foot);
       if(sn===wb.SheetNames[0])result.unit=unit;
       const hdrs=(rows[2]||[]).map(h=>h?String(h).replace(/\n/g,' ').trim():null);
-      // Validate required BP columns are present before processing rows
-      const hTrimmed=hdrs.map(h=>String(h||'').trim());
-      if(hTrimmed[0]!=='ZO'||hTrimmed[1]!=='RO'||hTrimmed[2]!=='BRANCH'){
-        AppLog.add('Parser',`parseBP: schema mismatch in sheet "${sn}" — skipped`,'WARN',
-          `Expected ZO/RO/BRANCH at cols 0-2, found: ${hTrimmed.slice(0,3).join('/')}`);
-        return;
-      }
       const data=[];
       for(let i=3;i<rows.length;i++){
         const row=rows[i];
@@ -1790,56 +1726,21 @@ const Parser = {
       }
       result.sheets[sn]={headers:hdrs.filter(Boolean),rows:data};
     });
-    // If every sheet was skipped (all empty/mismatched), treat as parse failure
-    if(Object.keys(result.sheets).length===0){
-      AppLog.add('Parser',`parseBP: no valid sheets extracted — ${fname}`,'ERR',
-        'All sheets were empty or failed schema validation');
-      return null;
-    }
     return result;
   },
 
   parseRD(buf,fname){
-    // ── Structural validation ────────────────────────────────────
-    if(!buf||buf.byteLength===0){
-      AppLog.add('Parser',`parseRD: empty buffer — ${fname}`,'ERR','File has 0 bytes; skipping');
-      return null;
-    }
-    let wb;
-    try{
-      wb=XLSX.read(buf,{type:'array'});
-    }catch(err){
-      AppLog.add('Parser',`parseRD: XLSX.read failed — ${fname}`,'ERR',err.message);
-      console.error('SheetJS parseRD error:',fname,err);
-      return null;
-    }
-    if(!wb||!wb.SheetNames||wb.SheetNames.length===0){
-      AppLog.add('Parser',`parseRD: workbook has no sheets — ${fname}`,'ERR','Empty or invalid XLSX structure');
-      return null;
-    }
-    // ── End structural validation ────────────────────────────────
+    const wb=XLSX.read(buf,{type:'array'});
     const date=this.dateFromName(fname,'RD');
     const result={date,sheets:{},unit:'crores'};
     wb.SheetNames.forEach(sn=>{
       const ws=wb.Sheets[sn];
-      // Skip sheets that are completely empty (no cell keys)
-      if(!ws||Object.keys(ws).filter(k=>!k.startsWith('!')).length===0){
-        AppLog.add('Parser',`parseRD: sheet "${sn}" is empty — skipped`,'WARN',fname);
-        return;
-      }
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
       // RD: xlsx.js skips empty Row0, so Row0=title+unit, Row1=headers, Row2+=data
       const foot=(rows[0]||[]).filter(Boolean).join(' ');
       const unit=this.detectUnit(foot)||'crores';
       if(sn===wb.SheetNames[0])result.unit=unit;
       const hdrs=(rows[1]||[]).map(h=>h?String(h).replace(/\n/g,' ').trim():null);
-      // Validate required RD columns are present before processing rows
-      const hTrimmed=hdrs.map(h=>String(h||'').trim());
-      if(hTrimmed[0]!=='Zone'||hTrimmed[1]!=='Region'||hTrimmed[2]!=='Branchname'){
-        AppLog.add('Parser',`parseRD: schema mismatch in sheet "${sn}" — skipped`,'WARN',
-          `Expected Zone/Region/Branchname at cols 0-2, found: ${hTrimmed.slice(0,3).join('/')}`);
-        return;
-      }
       const data=[];
       for(let i=2;i<rows.length;i++){
         const row=rows[i];
@@ -1859,12 +1760,6 @@ const Parser = {
       }
       result.sheets[sn]={headers:hdrs.filter(Boolean),rows:data};
     });
-    // If every sheet was skipped, treat as parse failure
-    if(Object.keys(result.sheets).length===0){
-      AppLog.add('Parser',`parseRD: no valid sheets extracted — ${fname}`,'ERR',
-        'All sheets were empty or failed schema validation');
-      return null;
-    }
     return result;
   },
 
@@ -2102,26 +1997,23 @@ const ConfigSync = {
         if (pat) await DB.set('config', 'ghPat', pat);
         delete cfg._ghPat; // don't store raw PAT in Cfg.d
       }
-      // Restore sheet IDs to fileIndex — prevents reconversion after data clear.
-      // Always apply IDs from config.json regardless of bpConverted flag —
-      // the saved ID in config.json is authoritative (it was written when conversion succeeded).
-      // Skipping when bpConverted=true caused stale IDs to persist after sheet deletion.
+      // Restore sheet IDs to fileIndex — prevents reconversion after data clear
       const sheetIds = cfg.fileIndexSheetIds || {};
       for (const [dk, ids] of Object.entries(sheetIds)) {
         try {
           const existing = await DB.get('fileIndex', dk) || {};
           let changed = false;
-          if (ids.bpSheetId) {
-            existing.bpSheetId  = ids.bpSheetId;
+          if (ids.bpSheetId && !existing.bpConverted) {
+            existing.bpSheetId = ids.bpSheetId;
             existing.bpConverted = true;
-            existing.bpStale    = false;
+            existing.bpStale = false;
             if (ids.bpConvertedVersion) existing.bpVersion = ids.bpConvertedVersion;
             changed = true;
           }
-          if (ids.rdSheetId) {
-            existing.rdSheetId  = ids.rdSheetId;
+          if (ids.rdSheetId && !existing.rdConverted) {
+            existing.rdSheetId = ids.rdSheetId;
             existing.rdConverted = true;
-            existing.rdStale    = false;
+            existing.rdStale = false;
             if (ids.rdConvertedVersion) existing.rdVersion = ids.rdConvertedVersion;
             changed = true;
           }
@@ -2181,42 +2073,22 @@ const SheetsAPI = {
   BASE: 'https://sheets.googleapis.com/v4/spreadsheets',
 
   // Query a sheet for specific zone rows only — returns aggregated values
-  // Uses sheets.values.get with a filter approach via batchGet.
-  // Returns { success, error, errorMsg, rows } — callers must check .success.
+  // Uses sheets.values.get with a filter approach via batchGet
   async queryZoneData(sheetId, zone, sheetName) {
     const token = await GDrive.getToken(false).catch(() => null);
-    if (!token) {
-      return { success: false, error: 'NO_TOKEN',
-               errorMsg: 'No Google authentication token available', rows: null };
-    }
+    if (!token) return null;
     try {
       // Fetch all data — request A:AZ to cover wide sheets
       const range = encodeURIComponent(`${sheetName}!A:AZ`);
       const url = `${this.BASE}/${sheetId}/values/${range}?majorDimension=ROWS`;
       const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-
-      if (resp.status === 401) {
-        return { success: false, error: 'AUTH_FAILED',
-                 errorMsg: 'Authentication failed — token expired or invalid', rows: null };
-      }
-      if (resp.status === 403) {
-        return { success: false, error: 'ACCESS_DENIED',
-                 errorMsg: 'Access denied — insufficient permissions to read sheet', rows: null };
-      }
-      if (resp.status === 404) {
-        return { success: false, error: 'NOT_FOUND',
-                 errorMsg: `Sheet not found: ${sheetId.substring(0,12)}`, rows: null };
-      }
       if (!resp.ok) {
-        const body = await resp.text().catch(() => '');
-        console.warn('Sheets API error:', resp.status, body);
-        return { success: false, error: `HTTP_${resp.status}`,
-                 errorMsg: `HTTP ${resp.status}: ${body.substring(0, 100)}`, rows: null };
+        console.warn('Sheets API error:', resp.status, await resp.text());
+        return null;
       }
-
       const data = await resp.json();
       const rows = data.values || [];
-      if (rows.length < 2) return { success: true, error: null, errorMsg: null, rows: [] };
+      if (rows.length < 2) return null;
 
       // ── Detect header row by content, not position ──────────────
       // BP files:  first header = "ZO",   second = "RO"   (12 columns total)
@@ -2240,7 +2112,7 @@ const SheetsAPI = {
         console.warn(`queryZoneData: no header row found in ${sheetName} (${sheetId})`);
         AppLog.add('Sheets', `Header not found — ${sheetName}`, 'ERR',
           `sheetId=${sheetId.substring(0,12)} — expected ZO/RO/BRANCH or Zone/Region/Branchname`);
-        return { success: true, error: null, errorMsg: null, rows: [] };
+        return null;
       }
 
       // ── Layer 1: Hardcoded schema validation ────────────────────
@@ -2269,7 +2141,7 @@ const SheetsAPI = {
         console.warn(`queryZoneData: ${msg} (${sheetId})`);
         AppLog.add('Sheets', `Schema validation failed — ${sheetName}`, 'ERR',
           `sheetId=${sheetId.substring(0,12)} · ${schemaErrors.join(' · ')}`);
-        return { success: true, error: null, errorMsg: null, rows: [] }; // Reject silently — wrong schema
+        return null; // Reject the entire sheet — do not aggregate partial/shifted data
       }
       // ── end schema validation ────────────────────────────────────
 
@@ -2284,14 +2156,14 @@ const SheetsAPI = {
         return cellVal === zoneTrimmed;
       });
 
-      if (!dataRows.length) return { success: true, error: null, errorMsg: null, rows: [] };
+      if (!dataRows.length) return [];
 
       // ── Convert to objects ───────────────────────────────────────
       // Identifier columns (string) vs value columns (numeric)
       const BP_ID_COLS  = new Set(['ZO','RO','BRANCH']);
       const RD_ID_COLS  = new Set(['Zone','Region','Branchname','SOLID']);
 
-      const dataObjects = dataRows.map(row => {
+      return dataRows.map(row => {
         const obj = {};
         headers.forEach((h, j) => {
           if (!h) return;
@@ -2317,12 +2189,9 @@ const SheetsAPI = {
         }
         return obj;
       });
-
-      return { success: true, error: null, errorMsg: null, rows: dataObjects };
-
     } catch(e) {
       console.warn('SheetsAPI.queryZoneData error:', e);
-      return { success: false, error: 'EXCEPTION', errorMsg: e.message, rows: null };
+      return null;
     }
   },
 
@@ -2353,31 +2222,13 @@ const SheetsAPI = {
     if (!sheetNames) {
       const r = await this.getSheetNames(sheetId);
       sheetNames = r.names || [];
-      if (!sheetNames.length) {
-        // Log the actual reason so admin can see it in Admin Log
-        AppLog.add('Sheets', `buildBPFromSheet: getSheetNames returned empty — ${dateStr}`, 'ERR',
-          `sheetId=${sheetId ? sheetId.substring(0,20) : 'null'} | error=${r.error || 'none'} | ` +
-          `Possible causes: (1) sheetId is an XLSX file ID not a Google Sheet, ` +
-          `(2) sheet was deleted from Drive cache folder, ` +
-          `(3) Sheets API 403 — token missing spreadsheets.readonly scope`);
-        return null;
-      }
     }
     if (!sheetNames.length) return null;
     const result = { date: dateStr, sheets: {}, unit: 'lacs', fromSheets: true };
     const BP_ID_COLS = ['ZO','RO','BRANCH','__SOLID__','__BNAME__'];
     for (const sn of sheetNames) {
-      const qr = await this.queryZoneData(sheetId, zone, sn);
-      // Propagate auth errors up so callers can show specific error messages
-      if (!qr.success) {
-        if (qr.error === 'AUTH_FAILED' || qr.error === 'ACCESS_DENIED' || qr.error === 'NO_TOKEN') {
-          return { __authError: true, error: qr.error, errorMsg: qr.errorMsg, sheets: {} };
-        }
-        // Other errors (NOT_FOUND, HTTP_*, EXCEPTION): log and skip this sheet
-        console.warn(`buildBPFromSheet: skipping sheet "${sn}" — ${qr.errorMsg}`);
-        continue;
-      }
-      const rows = qr.rows || [];
+      const rows = await this.queryZoneData(sheetId, zone, sn);
+      if (!rows) continue;
       // Headers for aggregation — exclude identifier columns
       // rows retain all columns for filterBP (ZO, RO, BRANCH used for filtering)
       const headers = rows.length
@@ -2394,16 +2245,8 @@ const SheetsAPI = {
     if (!sheetNames.length) return null;
     const result = { date: dateStr, sheets: {}, unit: 'crores', fromSheets: true };
     for (const sn of sheetNames) {
-      const qr = await this.queryZoneData(sheetId, zone, sn);
-      // Propagate auth errors up so callers can show specific error messages
-      if (!qr.success) {
-        if (qr.error === 'AUTH_FAILED' || qr.error === 'ACCESS_DENIED' || qr.error === 'NO_TOKEN') {
-          return { __authError: true, error: qr.error, errorMsg: qr.errorMsg, sheets: {} };
-        }
-        console.warn(`buildRDFromSheet: skipping sheet "${sn}" — ${qr.errorMsg}`);
-        continue;
-      }
-      const rows = qr.rows || [];
+      const rows = await this.queryZoneData(sheetId, zone, sn);
+      if (!rows) continue;
       // Headers for aggregation only — exclude identifier columns
       // But keep ALL columns in rows so filterRD can use SOLID for branch filtering
       const ID_COLS = ['Zone','Region','Branchname','SOLID'];
@@ -3010,7 +2853,7 @@ const XLSXConverter = {
       `and mimeType='application/vnd.google-apps.folder' and trashed=false`
     );
     const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     if (r.ok) {
@@ -3022,7 +2865,7 @@ const XLSXConverter = {
       }
     }
     // Create subfolder under correct parent
-    const cr = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
+    const cr = await fetch('https://www.googleapis.com/drive/v3/files', {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -3038,20 +2881,16 @@ const XLSXConverter = {
     return cd.id;
   },
 
-  // Convert one XLSX file to Google Sheets format via Drive import API
-  // Idempotent: checks for existing Sheet with same name first.
-  // NOTE: Drive /copy ignores the mimeType field — it always copies as the source type.
-  //       The only correct way to get a Google Sheet from an XLSX is to:
-  //       1. Download the XLSX binary
-  //       2. Re-upload it via multipart import with mimeType=google-apps.spreadsheet
-  //       This forces Drive to perform the XLSX→Sheet conversion server-side.
+  // Convert one XLSX file to Google Sheets format via Drive copy API
+  // Idempotent: checks for existing Sheet with same name first
   async convertFile(token, xlsxFileId, name, cacheFolderId) {
     try {
+      // Drive strips the .xlsx extension when converting to a Sheet.
+      // Use the extension-free name for both the dedup check and the copy request
+      // so they match — otherwise the check never finds the existing sheet and
+      // a duplicate is created on every rebuild.
       const sheetName = name.replace(/\.xlsx$/i, '');
-
-      // ── Step 1: Dedup check — search for existing Google Sheet by name ──
-      // Searches ONLY for Google Sheets (not XLSX copies) — if a previous /copy
-      // created an XLSX with this name, it won't match and we'll correctly re-convert.
+      // Check if a Sheet with this name already exists in the cache folder
       const q = encodeURIComponent(
         `name='${sheetName}' and '${cacheFolderId}' in parents ` +
         `and mimeType='${this.MIME_SHEET}' and trashed=false`
@@ -3064,108 +2903,21 @@ const XLSXConverter = {
         const existing = await check.json();
         if (existing.files?.[0]?.id) {
           console.log(`Sheet already exists for ${sheetName}, reusing`);
-          return existing.files[0].id;
+          return existing.files[0].id; // reuse existing — no duplicate
         }
       }
-
-      // ── Step 2: Delete any stale XLSX copy with the same name ──────────
-      // A previous broken /copy call may have left an XLSX file named "BP_31.03.2026"
-      // in the cache folder. If left, it pollutes future dedup checks for XLSX mimeType.
-      // Clean it up before creating the correct Google Sheet version.
-      const staleQ = encodeURIComponent(
-        `name='${sheetName}' and '${cacheFolderId}' in parents ` +
-        `and mimeType='${this.MIME_XLSX}' and trashed=false`
-      );
-      const staleCheck = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${staleQ}&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (staleCheck.ok) {
-        const stale = await staleCheck.json();
-        for (const f of (stale.files || [])) {
-          // Trash the stale XLSX copy — don't permanently delete in case of mistakes
-          await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?supportsAllDrives=true`, {
-            method: 'PATCH',
-            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ trashed: true })
-          }).catch(() => {});
-          AppLog.add('Drive API', `Trashed stale XLSX copy — ${sheetName}`, 'WARN',
-            `id=${f.id.substring(0,12)} — was created by old /copy conversion bug`);
-        }
-      }
-
-      // ── Step 3: Download the XLSX binary ────────────────────────────────
-      const dlResp = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${xlsxFileId}?alt=media&supportsAllDrives=true`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!dlResp.ok) {
-        AppLog.add('Drive API', `Convert: XLSX download failed — ${sheetName}`, 'ERR',
-          `HTTP ${dlResp.status}`);
-        return null;
-      }
-      const xlsxBytes = await dlResp.arrayBuffer();
-
-      // ── Step 4: Re-upload as Google Sheet via multipart import ──────────
-      // Setting mimeType=google-apps.spreadsheet on the METADATA part of a multipart
-      // upload is the correct way to convert — Drive performs the conversion server-side.
-      // This is fundamentally different from /copy which ignores mimeType entirely.
-      const metadata = JSON.stringify({
-        name: sheetName,
-        mimeType: this.MIME_SHEET,
-        parents: [cacheFolderId]
-      });
-      const boundary = 'boundary_' + Math.random().toString(36).slice(2);
-      const delimiter = `\r\n--${boundary}\r\n`;
-      const closeDelimiter = `\r\n--${boundary}--`;
-
-      // Build multipart body: metadata part + binary part
-      const metaPart = delimiter +
-        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-        metadata;
-      const metaBytes = new TextEncoder().encode(metaPart);
-      const binaryHeader = new TextEncoder().encode(
-        `\r\n--${boundary}\r\n` +
-        `Content-Type: ${this.MIME_XLSX}\r\n\r\n`
-      );
-      const closeBytes = new TextEncoder().encode(closeDelimiter);
-
-      // Concatenate all parts into a single Uint8Array
-      const body = new Uint8Array(
-        metaBytes.byteLength + binaryHeader.byteLength + xlsxBytes.byteLength + closeBytes.byteLength
-      );
-      let offset = 0;
-      body.set(metaBytes,                       offset); offset += metaBytes.byteLength;
-      body.set(binaryHeader,                    offset); offset += binaryHeader.byteLength;
-      body.set(new Uint8Array(xlsxBytes),       offset); offset += xlsxBytes.byteLength;
-      body.set(closeBytes,                      offset);
-
-      const uploadResp = await fetch(
-        `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true`,
+      // Not found — create the copy
+      const r = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${xlsxFileId}/copy`,
         {
           method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': `multipart/related; boundary=${boundary}`
-          },
-          body: body
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: sheetName, mimeType: this.MIME_SHEET, parents: [cacheFolderId] })
         }
       );
-
-      if (!uploadResp.ok) {
-        const errText = await uploadResp.text().catch(() => '');
-        AppLog.add('Drive API', `Convert: multipart upload failed — ${sheetName}`, 'ERR',
-          `HTTP ${uploadResp.status}: ${errText.substring(0, 120)}`);
-        return null;
-      }
-
-      const created = await uploadResp.json();
-      AppLog.add('Drive API', `Convert: XLSX→Sheet import complete — ${sheetName}`, 'OK',
-        `sheetId=${created.id ? created.id.substring(0,12) : '?'}`);
-      return created.id || null;
-
+      if (!r.ok) { console.warn(`Convert ${name}: HTTP ${r.status}`); return null; }
+      return (await r.json()).id || null;
     } catch(e) {
-      AppLog.add('Drive API', `convertFile exception — ${name}`, 'ERR', e.message);
       console.warn(`Convert ${name} error:`, e.message);
       return null;
     }
@@ -3190,26 +2942,7 @@ const XLSXConverter = {
     this._converting = true;
     try {
       const token = await GDrive.getToken(false).catch(() => null);
-      if (!token) {
-        AppLog.add('Drive API', 'ensureConverted: no token available', 'ERR',
-          'Cannot convert files without Google authentication');
-        return { converted: 0, skipped: 0, failed: 0 };
-      }
-
-      // Validate token isn't about to expire during the conversion loop.
-      // Each file takes ~300ms so 50 files = ~15s; proactively refresh if < 5 min remain.
-      const msUntilExpiry = GDrive.tokenExpiry - Date.now();
-      if (msUntilExpiry < 300000) { // < 5 minutes
-        AppLog.add('Drive API',
-          `Token expires in ~${Math.round(msUntilExpiry / 60000)} min — refreshing before conversion`, 'WARN', '');
-        try {
-          await GDrive.getToken(true); // interactive refresh
-          AppLog.add('Drive API', 'Token refreshed before conversion', 'OK', 'Expiry extended ~1 hour');
-        } catch(e) {
-          AppLog.add('Drive API', 'Token refresh failed before conversion', 'ERR', e.message);
-          return { converted: 0, skipped: 0, failed: 0 };
-        }
-      }
+      if (!token) return { converted: 0, skipped: 0, failed: 0 };
 
       const bpFolderId = Cfg.get('gBpFolderId');
       const rdFolderId = Cfg.get('gRdFolderId');
@@ -3547,47 +3280,21 @@ const GDrive = {
 
   // Get a valid access token — restores from IndexedDB to avoid flash on reload
   async getToken(interactive = false) {
-    // The required scope set — any persisted token that was granted a different
-    // (narrower) set of scopes will be discarded and re-requested.
-    // drive.readonly: list and read ALL files the user owns, regardless of who uploaded them.
-    // drive: full read/write access — required for /copy, folder creation, and file writes.
-    //   drive.file was previously used here but it only covers files this app instance created,
-    //   so /copy of externally-uploaded XLSX files silently returned null and bpSheetId was
-    //   never set, causing "Could not read FY End BP sheet" every time.
-    // spreadsheets.readonly: read any Google Sheet the user owns via Sheets API v4.
-    const REQUIRED_SCOPES = [
-      'https://www.googleapis.com/auth/drive',
-      'https://www.googleapis.com/auth/spreadsheets.readonly'
-    ];
-    const SCOPE_FINGERPRINT = REQUIRED_SCOPES.sort().join('|');
-
     // 1. Use in-memory token if still valid
     if (this.token && Date.now() < this.tokenExpiry - 60000) return this.token;
 
-    // 2. Try restoring persisted token from IndexedDB (avoids Google page flash).
-    //    SCOPE CHECK: only reuse the cached token if it was granted the same scopes
-    //    that are currently required. A mismatch means the user previously consented
-    //    to a narrower scope set (e.g. only drive.file, without spreadsheets.readonly)
-    //    and that stale token would cause Sheets API calls to return HTTP 403.
+    // 2. Try restoring persisted token from IndexedDB (avoids Google page flash)
     try {
       const saved = await DB.get('config', 'gdriveToken');
       if (saved && saved.token && saved.expiry && Date.now() < saved.expiry - 60000) {
-        if (saved.scopeFingerprint === SCOPE_FINGERPRINT) {
-          this.token = saved.token;
-          this.tokenExpiry = saved.expiry;
-          this._updateUI(true);
-          return this.token;
-        } else {
-          // Scopes changed since this token was granted — discard it.
-          // The user will be prompted to consent to the new scope set.
-          AppLog.add('OAuth', 'Cached token scope mismatch — forcing re-auth', 'WARN',
-            `Stored: ${saved.scopeFingerprint || '(none)'} | Required: ${SCOPE_FINGERPRINT}`);
-          await DB.del('config', 'gdriveToken').catch(() => {});
-        }
+        this.token = saved.token;
+        this.tokenExpiry = saved.expiry;
+        this._updateUI(true);
+        return this.token;
       }
     } catch(e) { /* no saved token */ }
 
-    // 3. No valid cached token — if not interactive, bail without loading GIS.
+    // 3. No cached token — if not interactive, bail immediately without loading GIS.
     //    Loading GIS and calling requestAccessToken({prompt:'none'}) causes a visible
     //    redirect flash to accounts.google.com on mobile, causing the refresh loop.
     if (!interactive) throw new Error('no_cached_token');
@@ -3598,18 +3305,20 @@ const GDrive = {
     return new Promise((res, rej) => {
       const client = window.google.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        scope: REQUIRED_SCOPES.join(' '),
+        scope: [
+          'https://www.googleapis.com/auth/drive.file',
+          'https://www.googleapis.com/auth/spreadsheets.readonly'
+        ].join(' '),
         prompt: interactive ? 'select_account' : 'none',
         callback: async (resp) => {
           if (resp.error) { rej(new Error(resp.error)); return; }
           this.token = resp.access_token;
           this.tokenExpiry = Date.now() + (resp.expires_in || 3600) * 1000;
-          // Persist token WITH scope fingerprint so future restores can validate it
+          // Persist token so next page load skips silent auth flash
           try {
             await DB.set('config', 'gdriveToken', {
               token: this.token,
-              expiry: this.tokenExpiry,
-              scopeFingerprint: SCOPE_FINGERPRINT
+              expiry: this.tokenExpiry
             });
           } catch(e) {}
           this._updateUI(true, resp);
@@ -3668,7 +3377,7 @@ const GDrive = {
       const token = await this.getToken(false).catch(() => null);
       if (!token) return null;
       const r = await fetch(
-        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=parents&supportsAllDrives=true`,
+        `https://www.googleapis.com/drive/v3/files/${folderId}?fields=parents`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!r.ok) return null;
@@ -3707,50 +3416,15 @@ const GDrive = {
     return all;
   },
 
-  // Download a file by Drive file ID.
-  // mimeType must be passed so Google Sheets are routed to the export endpoint
-  // instead of alt=media (which returns HTTP 403 for native Google Sheets).
-  async downloadFile(fileId, mimeType) {
+  // Download a file by Drive file ID
+  async downloadFile(fileId) {
     const token = await this.getToken(false);
-    if (mimeType === this.MIME_SHEET) {
-      return await this._downloadGoogleSheetAsXLSX(fileId, token);
-    }
     const resp = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
+      `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    if (!resp.ok) {
-      const statusText = resp.statusText ? ` ${resp.statusText}` : '';
-      throw new Error(`Download error: HTTP ${resp.status}${statusText} — check file exists and is readable`);
-    }
+    if (!resp.ok) throw new Error(`Download error: ${resp.status}`);
     return resp.arrayBuffer();
-  },
-
-  // Export a Google Sheet as XLSX binary via the Drive export endpoint.
-  // alt=media cannot be used on native Google Sheets — they must be exported.
-  async _downloadGoogleSheetAsXLSX(sheetId, token) {
-    const exportUrl = `https://www.googleapis.com/drive/v3/files/${sheetId}/export` +
-      `?mimeType=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet&supportsAllDrives=true`;
-    try {
-      const resp = await fetch(exportUrl, { headers: { Authorization: `Bearer ${token}` } });
-      if (resp.status === 401 || resp.status === 403) {
-        throw new Error(`Authentication failed: HTTP ${resp.status} — token may be expired or file not accessible`);
-      }
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => '');
-        throw new Error(`Export failed: HTTP ${resp.status} — ${text.substring(0, 150).replace(/\n/g, ' ')}`);
-      }
-      const buffer = await resp.arrayBuffer();
-      if (buffer.byteLength < 4) throw new Error('Export returned empty or corrupt data');
-      // Validate XLSX signature (PK zip header)
-      const sig = new Uint8Array(buffer, 0, 4);
-      if (sig[0] !== 0x50 || sig[1] !== 0x4B || sig[2] !== 0x03 || sig[3] !== 0x04) {
-        throw new Error('Export returned unexpected format — not a valid XLSX file');
-      }
-      return buffer;
-    } catch(e) {
-      throw new Error(`Google Sheet export failed (${sheetId.substring(0,12)}): ${e.message}`);
-    }
   },
 
   // Compute which dates are needed for dashboard (time periods)
@@ -3938,18 +3612,8 @@ const GDrive = {
           await Dashboard.init();
           App.hideLanding();
         }
-        // Await XLSX→Sheets conversion so callers (wizard) can trust files are ready
-        this._setSyncBar('Preparing sheets...', true);
-        try {
-          const convResult = await this._autoConvertXLSX();
-          if (convResult && (convResult.converted > 0 || convResult.failed > 0)) {
-            AppLog.add('Drive API', 'Sheet conversion complete', 'OK',
-              `Converted: ${convResult.converted}, Skipped: ${convResult.skipped}, Failed: ${convResult.failed}`);
-          }
-        } catch(e) {
-          console.warn('AutoConvert:', e.message);
-          AppLog.add('Drive API', 'Sheet conversion failed', 'WARN', e.message);
-        }
+        // Auto-update chart summary and trigger XLSX conversion
+        this._autoConvertXLSX().catch(e => console.warn('AutoConvert:', e.message));
         this._autoUpdateSummary().catch(e => console.warn('Summary auto-update:', e));
         return;
       }
@@ -3975,23 +3639,11 @@ const GDrive = {
       const downloadBatch = async (files, type) => {
         for (const f of files) {
           try {
-            // Pass mimeType so Google Sheets are routed to export endpoint, not alt=media
-            const buf = await this.downloadFile(f.id, f.mimeType);
+            const buf = await this.downloadFile(f.id);
             const parsed = type === 'bp' ? Parser.parseBP(buf, f.name) : Parser.parseRD(buf, f.name);
-            if (!parsed) {
-              AppLog.add('Drive API', `Skipping corrupt/empty file — ${f.name}`, 'WARN',
-                'Parser returned null — file may be empty or have unexpected structure');
-            } else {
-              await DB.set(type === 'bp' ? 'bpFiles' : 'rdFiles', f.dateKey, parsed);
-              DE.clearCache(); // Clear agg cache when new files arrive
-            }
-          } catch(e) {
-            const errType = e.message.includes('401') || e.message.includes('403') ? 'AUTH' :
-                           e.message.includes('export') ? 'EXPORT' : 'DOWNLOAD';
-            console.warn(`[${errType}] Download failed:`, f.name, e.message);
-            AppLog.add('Drive API', `Download failed — ${f.name}`, 'ERR',
-              `${errType}: ${e.message.substring(0, 100)}`);
-          }
+            await DB.set(type === 'bp' ? 'bpFiles' : 'rdFiles', f.dateKey, parsed);
+            DE.clearCache(); // Clear agg cache when new files arrive
+          } catch(e) { console.warn('Download failed:', f.name, e); }
           updateProg(f.name);
         }
       };
@@ -4030,21 +3682,13 @@ const GDrive = {
           for (const f of [...bpRest, ...rdRest]) {
             const type = bpRest.includes(f) ? 'bp' : 'rd';
             try {
-              const buf = await this.downloadFile(f.id, f.mimeType);
+              const buf = await this.downloadFile(f.id);
               const parsed = type==='bp'?Parser.parseBP(buf,f.name):Parser.parseRD(buf,f.name);
-              if(!parsed){
-                AppLog.add('Drive API',`Background: skipping corrupt/empty file — ${f.name}`,'WARN',
-                  'Parser returned null');
-              } else {
-                await DB.set(type==='bp'?'bpFiles':'rdFiles', f.dateKey, parsed);
-                DE.clearCache();
-                // If this file is needed for a dashboard period, refresh dashboard
-                if (neededSet.has(f.dateKey)) dashboardNeedsRefresh = true;
-              }
-            } catch(e) {
-              AppLog.add('Drive API',`Background download failed — ${f.name}`,'ERR',e.message);
-              console.warn('Download failed:', f.name, e);
-            }
+              await DB.set(type==='bp'?'bpFiles':'rdFiles', f.dateKey, parsed);
+              DE.clearCache();
+              // If this file is needed for a dashboard period, refresh dashboard
+              if (neededSet.has(f.dateKey)) dashboardNeedsRefresh = true;
+            } catch(e) { console.warn('Download failed:', f.name, e); }
             updateProg(f.name);
             // Refresh dashboard incrementally as period files arrive
             if (dashboardNeedsRefresh && Cfg.get('activeZone')) {
@@ -4066,10 +3710,8 @@ const GDrive = {
         await Admin.refreshFileList('rd');
       }
 
-      // Await XLSX→Sheets conversion so downstream callers (wizard) can trust files are ready
-      try {
-        await this._autoConvertXLSX();
-      } catch(e) { console.warn('AutoConvert:', e.message); }
+      // Trigger background XLSX→Sheets conversion and chart summary update
+      this._autoConvertXLSX().catch(e => console.warn('AutoConvert:', e.message));
 
       // Chart data integrity handled by DataIntegrity.ensureChartData
       // Called from App.init after dashboard renders — no action needed here
@@ -4311,17 +3953,10 @@ const FM = {
           const f=await entry.getFile();
           const buf=await f.arrayBuffer();
           const parsed=type==='bp'?Parser.parseBP(buf,entry.name):Parser.parseRD(buf,entry.name);
-          if(!parsed){
-            console.warn('Skipping unparseable file:',entry.name);
-            continue;
-          }
           await DB.set(store,dk,parsed);
           DE.clearCache(); // Clear agg cache
           newFiles.push(dk);
-        }catch(e){
-          AppLog.add('Parser',`Local import error — ${entry.name}`,'ERR',e.message);
-          console.warn('Parse error:',entry.name,e);
-        }
+        }catch(e){console.warn('Parse error:',entry.name,e);}
       }
     }
     return newFiles;
@@ -5707,7 +5342,7 @@ const SummaryMgr = {
   async _findFile(token, folderId, name) {
     const q = encodeURIComponent(`name='${name}' and '${folderId}' in parents and trashed=false`);
     const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`,
+      `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,modifiedTime)`,
       { headers:{ Authorization:`Bearer ${token}` } }
     );
     if (!r.ok) return null;
@@ -8682,29 +8317,6 @@ const ZoneSetupWizard = {
     }
     this._prereqProgress(38, allDates.length + ' dates in file index', 'Syncing Drive');
 
-    // ── Step B2: Wait for any pending XLSX→Sheet conversions ─────
-    // FileIndex may have bpXlsxId entries not yet converted to bpSheetId.
-    // Without this wait, Step D below sees no bpSheetId and tries a redundant
-    // per-file conversion, or Step E gets a sheet that doesn't exist yet.
-    this._prereqProgress(40, 'Checking sheet conversions...', 'Syncing Drive');
-    try {
-      const convResult = await XLSXConverter.ensureConverted((done, total, name) => {
-        const pct = 40 + Math.round((done / total) * 10); // 40–50%
-        this._prereqProgress(pct, `Converting ${name}…`, 'Syncing Drive');
-      });
-      if (this._prereqAborted) return;
-      if (convResult && convResult.failed > 0) {
-        AppLog.add('Region',
-          `Zone setup: ${convResult.failed} sheet conversion(s) failed`, 'WARN',
-          'Wizard may have incomplete data — check Drive permissions');
-      }
-    } catch(e) {
-      if (this._prereqAborted) return;
-      console.warn('Conversion wait failed:', e.message);
-      AppLog.add('Region', 'Zone setup: conversion wait error', 'WARN', e.message);
-      // Non-fatal: Step D will attempt its own per-file conversion if bpSheetId is missing
-    }
-
     // ── Step C: Find FY End date ──────────────────────────────
     this._prereqProgress(42, 'Looking for FY End (March 31) file...', 'Finding FY End File');
     const fyDate = allDates.filter(d => d.endsWith('-03-31')).sort().pop() ||
@@ -8715,11 +8327,6 @@ const ZoneSetupWizard = {
       return;
     }
     this._prereqProgress(55, 'FY End file: ' + (entry.bpName || fyDate), 'Finding FY End File');
-    AppLog.add('Region', 'Zone setup: FY End file selected', 'INF',
-      `fyDate=${fyDate} | bpName=${entry.bpName||'?'} | ` +
-      `bpSheetId=${entry.bpSheetId ? entry.bpSheetId.substring(0,20) : 'NONE'} | ` +
-      `bpXlsxId=${entry.bpXlsxId ? entry.bpXlsxId.substring(0,20) : 'NONE'} | ` +
-      `bpConverted=${entry.bpConverted||false} | allDates=[${allDates.slice(0,5).join(', ')}${allDates.length>5?'…':''}]`);
 
     // ── Step D: Convert if needed ─────────────────────────────
     if (!entry.bpSheetId) {
@@ -8761,27 +8368,7 @@ const ZoneSetupWizard = {
       entry.bpSheetId, fyDate, null, {}
     ).catch((e) => { AppLog.add('Region','buildBPFromSheet error','ERR',e.message); return null; });
 
-    // Log what we tried to read — visible in Admin Log to diagnose failures
-    AppLog.add('Region', 'Zone setup: attempted buildBPFromSheet', sheetData ? 'OK' : 'ERR',
-      `fyDate=${fyDate} | bpName=${entry.bpName||'?'} | ` +
-      `bpSheetId=${entry.bpSheetId ? entry.bpSheetId.substring(0,20) : 'NULL'} | ` +
-      `bpXlsxId=${entry.bpXlsxId ? entry.bpXlsxId.substring(0,20) : 'null'} | ` +
-      `bpConverted=${entry.bpConverted} | result=${sheetData ? (sheetData.__authError ? 'authError:'+sheetData.error : 'ok:'+Object.keys(sheetData.sheets||{}).length+'sheets') : 'null'}`);
-
     if (this._prereqAborted) return; // admin cancelled during fetch
-
-    // Check for propagated auth errors before the generic null check
-    if (sheetData?.__authError) {
-      const isAuth = sheetData.error === 'AUTH_FAILED' || sheetData.error === 'NO_TOKEN';
-      AppLog.add('Region', `Zone setup: ${sheetData.error}`, 'ERR', sheetData.errorMsg);
-      this._prereqError(
-        isAuth
-          ? 'Google authentication expired. Click Cancel, sign out and sign in again, then reopen Zone Setup.'
-          : `Access denied reading FY End sheet. Check Drive folder permissions. (${sheetData.error})`,
-        false // canRetry — re-auth needed, not just a retry
-      );
-      return;
-    }
 
     if (!sheetData) {
       this._prereqError('Could not read FY End BP sheet. Check your connection and retry.');
@@ -9945,22 +9532,10 @@ const App = {
       let token = (GDrive.token && GDrive.tokenExpiry > now) ? GDrive.token : null;
       if (!token) {
         const cached = await DB.get('config', 'gdriveToken').catch(() => null);
-        // Scope fingerprint check: must match GDrive.getToken's REQUIRED_SCOPES.
-        // drive.file was previously used but cannot /copy externally-uploaded files,
-        // causing silent null from convertFile and "Could not read FY End BP sheet".
-        // Now requires full drive scope for read+write on any file.
-        const expectedFingerprint = [
-          'https://www.googleapis.com/auth/drive',
-          'https://www.googleapis.com/auth/spreadsheets.readonly'
-        ].sort().join('|');
-        const scopeOk = cached?.scopeFingerprint === expectedFingerprint;
-        if (cached?.token && cached?.expiry > now && scopeOk) {
+        if (cached?.token && cached?.expiry > now) {
           token = cached.token;
           GDrive.token = token;
           GDrive.tokenExpiry = cached.expiry;
-        } else if (cached?.token && !scopeOk) {
-          AppLog.add('OAuth', 'Background sync skipped — cached token scope mismatch', 'WARN',
-            'Admin must sign in again to re-grant updated permissions');
         }
       }
       if (!token) {
