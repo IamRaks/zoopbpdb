@@ -2196,8 +2196,8 @@ const SheetsAPI = {
   },
 
   // Get sheet names from a spreadsheet
-  async getSheetNames(sheetId) {
-    const token = await GDrive.getToken(false).catch(() => null);
+  async getSheetNames(sheetId, existingToken) {
+    const token = existingToken || await GDrive.getToken(false).catch(() => null);
     if (!token) return { names: [], error: 'No OAuth token' };
     try {
       const url = `${this.BASE}/${sheetId}?fields=sheets.properties.title`;
@@ -2206,6 +2206,7 @@ const SheetsAPI = {
         const body = await resp.text().catch(() => '');
         const msg = `HTTP ${resp.status}${body ? ': ' + body.substring(0,120) : ''}`;
         console.warn(`getSheetNames failed for ${sheetId}:`, msg);
+        AppLog.add('Sheets', `getSheetNames HTTP error — sheetId=${sheetId.substring(0,12)}`, 'ERR', msg);
         return { names: [], error: msg };
       }
       const data = await resp.json();
@@ -2213,15 +2214,21 @@ const SheetsAPI = {
       return { names, error: null };
     } catch(e) {
       console.warn('getSheetNames error:', e);
+      AppLog.add('Sheets', `getSheetNames exception — sheetId=${sheetId.substring(0,12)}`, 'ERR', e.message);
       return { names: [], error: e.message };
     }
   },
 
-  async buildBPFromSheet(sheetId, dateStr, zone, cachedSheetNames) {
+  async buildBPFromSheet(sheetId, dateStr, zone, cachedSheetNames, existingToken) {
     let sheetNames = cachedSheetNames;
     if (!sheetNames) {
-      const r = await this.getSheetNames(sheetId);
+      const r = await this.getSheetNames(sheetId, existingToken);
       sheetNames = r.names || [];
+      if (!sheetNames.length) {
+        AppLog.add('Sheets', `buildBPFromSheet: no sheet names — ${dateStr}`, 'ERR',
+          `sheetId=${sheetId ? sheetId.substring(0,20) : 'null'} | error=${r.error || 'none'}`);
+        return null;
+      }
     }
     if (!sheetNames.length) return null;
     const result = { date: dateStr, sheets: {}, unit: 'lacs', fromSheets: true };
@@ -8365,7 +8372,7 @@ const ZoneSetupWizard = {
     }
 
     const sheetData = await SheetsAPI.buildBPFromSheet(
-      entry.bpSheetId, fyDate, null, {}
+      entry.bpSheetId, fyDate, null, {}, freshToken
     ).catch((e) => { AppLog.add('Region','buildBPFromSheet error','ERR',e.message); return null; });
 
     if (this._prereqAborted) return; // admin cancelled during fetch
