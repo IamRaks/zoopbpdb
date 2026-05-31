@@ -1686,17 +1686,48 @@ const Parser = {
   isCount(col){return /\bcount\b/i.test(col||'');},
 
   parseBP(buf,fname){
-    const wb=XLSX.read(buf,{type:'array'});
+    // ── Structural validation ────────────────────────────────────
+    // Guard against null/empty buffers, corrupt XLSX data, or files
+    // that arrived as empty exports from the Google Sheet export path.
+    if(!buf||buf.byteLength===0){
+      AppLog.add('Parser',`parseBP: empty buffer — ${fname}`,'ERR','File has 0 bytes; skipping');
+      return null;
+    }
+    let wb;
+    try{
+      wb=XLSX.read(buf,{type:'array'});
+    }catch(err){
+      AppLog.add('Parser',`parseBP: XLSX.read failed — ${fname}`,'ERR',err.message);
+      console.error('SheetJS parseBP error:',fname,err);
+      return null;
+    }
+    if(!wb||!wb.SheetNames||wb.SheetNames.length===0){
+      AppLog.add('Parser',`parseBP: workbook has no sheets — ${fname}`,'ERR','Empty or invalid XLSX structure');
+      return null;
+    }
+    // ── End structural validation ────────────────────────────────
     const date=this.dateFromName(fname,'BP');
     const result={date,sheets:{},unit:'lacs'};
     wb.SheetNames.forEach(sn=>{
       const ws=wb.Sheets[sn];
+      // Skip sheets that are completely empty (no cell keys)
+      if(!ws||Object.keys(ws).filter(k=>!k.startsWith('!')).length===0){
+        AppLog.add('Parser',`parseBP: sheet "${sn}" is empty — skipped`,'WARN',fname);
+        return;
+      }
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
       // BP: Row0=title, Row1=footnote(unit), Row2=headers, Row3+=data
       const foot=(rows[1]||[]).filter(Boolean).join(' ');
       const unit=this.detectUnit(foot);
       if(sn===wb.SheetNames[0])result.unit=unit;
       const hdrs=(rows[2]||[]).map(h=>h?String(h).replace(/\n/g,' ').trim():null);
+      // Validate required BP columns are present before processing rows
+      const hTrimmed=hdrs.map(h=>String(h||'').trim());
+      if(hTrimmed[0]!=='ZO'||hTrimmed[1]!=='RO'||hTrimmed[2]!=='BRANCH'){
+        AppLog.add('Parser',`parseBP: schema mismatch in sheet "${sn}" — skipped`,'WARN',
+          `Expected ZO/RO/BRANCH at cols 0-2, found: ${hTrimmed.slice(0,3).join('/')}`);
+        return;
+      }
       const data=[];
       for(let i=3;i<rows.length;i++){
         const row=rows[i];
@@ -1721,21 +1752,56 @@ const Parser = {
       }
       result.sheets[sn]={headers:hdrs.filter(Boolean),rows:data};
     });
+    // If every sheet was skipped (all empty/mismatched), treat as parse failure
+    if(Object.keys(result.sheets).length===0){
+      AppLog.add('Parser',`parseBP: no valid sheets extracted — ${fname}`,'ERR',
+        'All sheets were empty or failed schema validation');
+      return null;
+    }
     return result;
   },
 
   parseRD(buf,fname){
-    const wb=XLSX.read(buf,{type:'array'});
+    // ── Structural validation ────────────────────────────────────
+    if(!buf||buf.byteLength===0){
+      AppLog.add('Parser',`parseRD: empty buffer — ${fname}`,'ERR','File has 0 bytes; skipping');
+      return null;
+    }
+    let wb;
+    try{
+      wb=XLSX.read(buf,{type:'array'});
+    }catch(err){
+      AppLog.add('Parser',`parseRD: XLSX.read failed — ${fname}`,'ERR',err.message);
+      console.error('SheetJS parseRD error:',fname,err);
+      return null;
+    }
+    if(!wb||!wb.SheetNames||wb.SheetNames.length===0){
+      AppLog.add('Parser',`parseRD: workbook has no sheets — ${fname}`,'ERR','Empty or invalid XLSX structure');
+      return null;
+    }
+    // ── End structural validation ────────────────────────────────
     const date=this.dateFromName(fname,'RD');
     const result={date,sheets:{},unit:'crores'};
     wb.SheetNames.forEach(sn=>{
       const ws=wb.Sheets[sn];
+      // Skip sheets that are completely empty (no cell keys)
+      if(!ws||Object.keys(ws).filter(k=>!k.startsWith('!')).length===0){
+        AppLog.add('Parser',`parseRD: sheet "${sn}" is empty — skipped`,'WARN',fname);
+        return;
+      }
       const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
       // RD: xlsx.js skips empty Row0, so Row0=title+unit, Row1=headers, Row2+=data
       const foot=(rows[0]||[]).filter(Boolean).join(' ');
       const unit=this.detectUnit(foot)||'crores';
       if(sn===wb.SheetNames[0])result.unit=unit;
       const hdrs=(rows[1]||[]).map(h=>h?String(h).replace(/\n/g,' ').trim():null);
+      // Validate required RD columns are present before processing rows
+      const hTrimmed=hdrs.map(h=>String(h||'').trim());
+      if(hTrimmed[0]!=='Zone'||hTrimmed[1]!=='Region'||hTrimmed[2]!=='Branchname'){
+        AppLog.add('Parser',`parseRD: schema mismatch in sheet "${sn}" — skipped`,'WARN',
+          `Expected Zone/Region/Branchname at cols 0-2, found: ${hTrimmed.slice(0,3).join('/')}`);
+        return;
+      }
       const data=[];
       for(let i=2;i<rows.length;i++){
         const row=rows[i];
@@ -1755,6 +1821,12 @@ const Parser = {
       }
       result.sheets[sn]={headers:hdrs.filter(Boolean),rows:data};
     });
+    // If every sheet was skipped, treat as parse failure
+    if(Object.keys(result.sheets).length===0){
+      AppLog.add('Parser',`parseRD: no valid sheets extracted — ${fname}`,'ERR',
+        'All sheets were empty or failed schema validation');
+      return null;
+    }
     return result;
   },
 
@@ -3766,8 +3838,13 @@ const GDrive = {
             // Pass mimeType so Google Sheets are routed to export endpoint, not alt=media
             const buf = await this.downloadFile(f.id, f.mimeType);
             const parsed = type === 'bp' ? Parser.parseBP(buf, f.name) : Parser.parseRD(buf, f.name);
-            await DB.set(type === 'bp' ? 'bpFiles' : 'rdFiles', f.dateKey, parsed);
-            DE.clearCache(); // Clear agg cache when new files arrive
+            if (!parsed) {
+              AppLog.add('Drive API', `Skipping corrupt/empty file — ${f.name}`, 'WARN',
+                'Parser returned null — file may be empty or have unexpected structure');
+            } else {
+              await DB.set(type === 'bp' ? 'bpFiles' : 'rdFiles', f.dateKey, parsed);
+              DE.clearCache(); // Clear agg cache when new files arrive
+            }
           } catch(e) {
             const errType = e.message.includes('401') || e.message.includes('403') ? 'AUTH' :
                            e.message.includes('export') ? 'EXPORT' : 'DOWNLOAD';
@@ -3815,11 +3892,19 @@ const GDrive = {
             try {
               const buf = await this.downloadFile(f.id, f.mimeType);
               const parsed = type==='bp'?Parser.parseBP(buf,f.name):Parser.parseRD(buf,f.name);
-              await DB.set(type==='bp'?'bpFiles':'rdFiles', f.dateKey, parsed);
-              DE.clearCache();
-              // If this file is needed for a dashboard period, refresh dashboard
-              if (neededSet.has(f.dateKey)) dashboardNeedsRefresh = true;
-            } catch(e) { console.warn('Download failed:', f.name, e); }
+              if(!parsed){
+                AppLog.add('Drive API',`Background: skipping corrupt/empty file — ${f.name}`,'WARN',
+                  'Parser returned null');
+              } else {
+                await DB.set(type==='bp'?'bpFiles':'rdFiles', f.dateKey, parsed);
+                DE.clearCache();
+                // If this file is needed for a dashboard period, refresh dashboard
+                if (neededSet.has(f.dateKey)) dashboardNeedsRefresh = true;
+              }
+            } catch(e) {
+              AppLog.add('Drive API',`Background download failed — ${f.name}`,'ERR',e.message);
+              console.warn('Download failed:', f.name, e);
+            }
             updateProg(f.name);
             // Refresh dashboard incrementally as period files arrive
             if (dashboardNeedsRefresh && Cfg.get('activeZone')) {
@@ -4086,10 +4171,17 @@ const FM = {
           const f=await entry.getFile();
           const buf=await f.arrayBuffer();
           const parsed=type==='bp'?Parser.parseBP(buf,entry.name):Parser.parseRD(buf,entry.name);
+          if(!parsed){
+            console.warn('Skipping unparseable file:',entry.name);
+            continue;
+          }
           await DB.set(store,dk,parsed);
           DE.clearCache(); // Clear agg cache
           newFiles.push(dk);
-        }catch(e){console.warn('Parse error:',entry.name,e);}
+        }catch(e){
+          AppLog.add('Parser',`Local import error — ${entry.name}`,'ERR',e.message);
+          console.warn('Parse error:',entry.name,e);
+        }
       }
     }
     return newFiles;
