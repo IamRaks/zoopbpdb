@@ -704,6 +704,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <button class="act-chip" data-filter="Summary" onclick="AppLog.setFilter('Summary',this)">Summary</button>
           <button class="act-chip" data-filter="Schema" onclick="AppLog.setFilter('Schema',this)">Schema</button>
           <button class="act-chip" data-filter="DataIntegrity" onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
+          <button class="act-chip" data-filter="Region" onclick="AppLog.setFilter('Region',this)">Region</button>
           <button class="act-chip" data-filter="ERR" onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
         </div>
         <!-- Log entries -->
@@ -742,6 +743,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <button class="act-chip" data-filter="Summary" onclick="AppLog.setFilter('Summary',this)">Summary</button>
     <button class="act-chip" data-filter="Schema" onclick="AppLog.setFilter('Schema',this)">Schema</button>
     <button class="act-chip" data-filter="DataIntegrity" onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
+    <button class="act-chip" data-filter="Region" onclick="AppLog.setFilter('Region',this)">Region</button>
     <button class="act-chip" data-filter="ERR" onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
   </div>
   <div id="actOverlayBody" style="flex:1;overflow-y:auto;padding:6px 12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.9"></div>
@@ -802,6 +804,17 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <button class="pw-forgot" onclick="App.cancelSetPassword()" id="backToLoginBtn">✕ Cancel</button>
     </div>
 
+  </div>
+</div>
+
+<!-- REGION PENDING REVIEW OVERLAY -->
+<div id="regionPendingOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9500;align-items:center;justify-content:center">
+  <div style="background:var(--nav2);border:1px solid var(--border);border-radius:14px;padding:28px 24px;max-width:380px;width:90%;text-align:center">
+    <div style="font-size:28px;margin-bottom:12px">⚠️</div>
+    <h3 style="margin-bottom:10px;color:var(--amber,#f0a500)" id="regionOverlayTitle">Action Required</h3>
+    <p style="font-size:12px;color:var(--text2);line-height:1.7;margin-bottom:16px" id="regionOverlayMsg"></p>
+    <div id="regionOverlayList" style="text-align:left;background:var(--bg3);border-radius:8px;padding:10px;margin-bottom:16px;font-size:11px;color:var(--text2);max-height:180px;overflow-y:auto"></div>
+    <button class="btn-p" style="width:100%" onclick="App.regionOverlayConfirm()">Go to Zone Setup →</button>
   </div>
 </div>
 
@@ -924,16 +937,85 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 
         <!-- ZONE -->
         <div class="asec" id="asec-zone">
-          <h3>Zone Selection</h3>
-          <p class="desc">Select the zone this dashboard displays.</p>
-          <div class="fg">
-            <label>Active Zone</label>
-            <select id="zoneSelAdmin" onchange="Admin.onZoneChange()"><option value="">— Load files first —</option></select>
+          <h3>Zone &amp; Region Setup</h3>
+          <p class="desc">Configure the zone and authenticate its regions. Summary generation is blocked until setup is complete.</p>
+
+          <!-- Step indicator -->
+          <div id="zoneWizardSteps" style="display:flex;gap:0;margin-bottom:18px;border-radius:8px;overflow:hidden;border:1px solid var(--border)">
+            <div class="wz-step active" id="wzStep1" style="flex:1;padding:8px 4px;text-align:center;font-size:11px;font-weight:600;background:var(--blue);color:#fff;cursor:pointer" onclick="ZoneSetupWizard.goStep(1)">1. Zone</div>
+            <div class="wz-step" id="wzStep2" style="flex:1;padding:8px 4px;text-align:center;font-size:11px;font-weight:600;background:var(--bg3);color:var(--text3);cursor:pointer" onclick="ZoneSetupWizard.goStep(2)">2. BP Regions</div>
+            <div class="wz-step" id="wzStep3" style="flex:1;padding:8px 4px;text-align:center;font-size:11px;font-weight:600;background:var(--bg3);color:var(--text3);cursor:pointer" onclick="ZoneSetupWizard.goStep(3)">3. RD Match</div>
+            <div class="wz-step" id="wzStep4" style="flex:1;padding:8px 4px;text-align:center;font-size:11px;font-weight:600;background:var(--bg3);color:var(--text3);cursor:pointer" onclick="ZoneSetupWizard.goStep(4)">4. Confirm</div>
           </div>
-          <div id="zoneRegPreview" style="display:none;margin-top:14px">
-            <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:7px;text-transform:uppercase;letter-spacing:.06em">Regions in zone:</div>
-            <div id="zoneRegList" class="chk-grp"></div>
+
+          <!-- Step 1: Zone Selection -->
+          <div id="zoneWizStep1">
+            <div class="fg">
+              <label>Active Zone</label>
+              <p style="font-size:10px;color:var(--text3);margin-bottom:5px">Select the zone this dashboard represents. Extracted from the ZO column of the FY End BP file. This determines which branches and regions are included in all calculations.</p>
+              <select id="zoneSelAdmin" onchange="ZoneSetupWizard.onZoneSelected(this.value)"><option value="">— Load files first —</option></select>
+            </div>
+            <div class="fg" style="margin-top:10px">
+              <label>Derived Region Label</label>
+              <p style="font-size:10px;color:var(--text3);margin-bottom:5px">Branches not assigned to any specific region are grouped under this label. It always appears as a region in the dashboard. Default: UNDER ZO.</p>
+              <input type="text" id="derivedRegionLabel" placeholder="UNDER ZO" value="UNDER ZO" oninput="ZoneSetupWizard.draft.derivedLabel=this.value">
+            </div>
+            <div id="zoneStep1Status" style="font-size:11px;margin-top:10px;color:var(--text3)"></div>
           </div>
+
+          <!-- Step 2: BP RO Authentication -->
+          <div id="zoneWizStep2" style="display:none">
+            <p style="font-size:11px;color:var(--text2);margin-bottom:10px">
+              All unique RO values found in the FY End BP file for the selected zone are listed below.
+              <strong>Tick = independent region</strong> with its own performance tracking.
+              Unticked = aggregated under the derived region (UNDER ZO).
+              <em>Effective From</em> sets the date from which a region is tracked independently — before this date its branches appear under UNDER ZO.
+            </p>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">
+              ⓘ NULL entries represent blank or special-character RO values in the source file.
+            </div>
+            <div id="bpROTable" style="overflow-x:auto"></div>
+            <div style="margin-top:12px;padding:10px;background:var(--bg3);border-radius:6px;font-size:11px;color:var(--text3)">
+              <strong>New RO values</strong> (highlighted in amber) were detected in files after the FY End date and require your decision.
+            </div>
+          </div>
+
+          <!-- Step 3: RD Region Matching -->
+          <div id="zoneWizStep3" style="display:none">
+            <p style="font-size:11px;color:var(--text2);margin-bottom:10px">
+              Each RD file region must be matched to a BP region so that RD parameters are correctly combined during aggregation.
+              Auto-matched regions (✅) were matched by name — please verify.
+              Unmatched or partial matches (⚠) default to the derived region (UNDER ZO).
+            </p>
+            <div style="font-size:10px;color:var(--text3);margin-bottom:8px">
+              ⓘ NULL entries represent blank Region values in the RD file. One-to-one mapping only.
+            </div>
+            <div id="rdMatchTable" style="overflow-x:auto"></div>
+          </div>
+
+          <!-- Step 4: Review & Confirm -->
+          <div id="zoneWizStep4" style="display:none">
+            <div id="wizReviewSummary" style="background:var(--bg3);border-radius:8px;padding:14px;font-size:12px;line-height:1.8;margin-bottom:14px"></div>
+            <div id="wizWarnings" style="margin-bottom:12px"></div>
+            <button class="btn-p" style="width:100%" id="wizConfirmBtn" onclick="ZoneSetupWizard.confirm()">✓ Confirm &amp; Save</button>
+            <p style="font-size:10px;color:var(--text3);margin-top:6px;text-align:center">
+              Saving will push configuration to GitHub and trigger a summary rebuild.
+            </p>
+          </div>
+
+          <!-- Pending Review Section -->
+          <div id="zonePendingSection" style="display:none;margin-top:20px;border-top:2px solid var(--amber,#f0a500);padding-top:14px">
+            <div style="font-size:11px;font-weight:700;color:var(--amber,#f0a500);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">⚠ Pending Region Review</div>
+            <p style="font-size:11px;color:var(--text2);margin-bottom:10px">New regions have been detected in BP/RD files. Review each item and accept or reject it. Accepted regions require an RD mapping. Rejected regions are permanently grouped under the derived region.</p>
+            <div id="pendingReviewList"></div>
+          </div>
+
+          <!-- Wizard nav buttons -->
+          <div style="display:flex;gap:8px;margin-top:16px" id="wizNavBtns">
+            <button class="btn-s" style="flex:1" id="wizBackBtn" onclick="ZoneSetupWizard.prevStep()" style="display:none">← Back</button>
+            <button class="btn-p" style="flex:2" id="wizNextBtn" onclick="ZoneSetupWizard.nextStep()">Next →</button>
+          </div>
+          <button class="btn-s" style="width:100%;margin-top:8px;font-size:11px" onclick="ZoneSetupWizard.startRevalidation()">🔍 Force Revalidation</button>
         </div>
 
         <!-- TIME PERIODS -->
@@ -1107,6 +1189,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
             <button class="act-chip" onclick="AdminLogUI.setFilter('GAS',this)">GAS</button>
             <button class="act-chip" onclick="AdminLogUI.setFilter('Schema',this)">Schema</button>
             <button class="act-chip" onclick="AdminLogUI.setFilter('DataIntegrity',this)">Integrity</button>
+            <button class="act-chip" onclick="AdminLogUI.setFilter('Region',this)">Region</button>
             <button class="act-chip" onclick="AdminLogUI.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
           </div>
 
@@ -1483,7 +1566,7 @@ const Cfg = {
     ghUsername:'', ghRepo:'',
     // Known region codes for the active zone — auto-populated during rebuild
     // Used by getAllRegions Layer 2 validation to reject phantom region keys
-    activeZoneRegions:[],
+    zoneSetup:{}, // Zone & Region registry — keyed by zone name
     ejsServiceId:'service_8x5yn04', ejsTemplateId:'template_l8mbtk9', ejsPublicKey:'IaT9mZNSS_294Z_J6',
     adminResetToken:'', adminResetExpiry:0,
     activeZone:'', displayUnit:'lacs', theme:'dark',
@@ -2378,6 +2461,260 @@ const SchemaValidator = {
       ).join(' | ') + (mismatches.length > 8 ? ` | …+${mismatches.length - 8} more` : '');
       this._log('DataIntegrity', `Tally MISMATCH — ${dateStr}`, 'WARN',
         `${mismatches.length} column(s) out of tolerance (>${TOLERANCE}%) | ${detail}`);
+    }
+  }
+};
+
+// ================================================================
+// REGION REGISTRY — authoritative zone/region configuration
+// Replaces activeZoneRegions whitelist with a structured, admin-
+// authenticated registry of BP RO values and RD region mappings.
+// ================================================================
+const RegionRegistry = {
+
+  // ── Normalise an RO/Region value ─────────────────────────────
+  // Trims spaces around hyphens and outer whitespace.
+  // "35130 - ERNAKULAM " → "35130-ERNAKULAM"
+  norm(v) {
+    return v ? v.split('-').map(p => p.trim()).filter(Boolean).join('-') : '';
+  },
+
+  // ── Get zoneSetup config for a zone ──────────────────────────
+  get(zone) {
+    const zs = Cfg.get('zoneSetup') || {};
+    return zs[zone] || null;
+  },
+
+  // ── Is initial setup complete for this zone? ─────────────────
+  isSetupComplete(zone) {
+    return !!(this.get(zone)?.setupComplete);
+  },
+
+  // ── Has pending review items? ─────────────────────────────────
+  hasPending(zone) {
+    const setup = this.get(zone);
+    if (!setup) return false;
+    return (setup.pendingReview || []).some(p => p.status === 'pending');
+  },
+
+  // ── Resolve which scopeKey a BP RO value maps to ─────────────
+  // Given an RO raw value and a date, returns either:
+  //   - The scopeKey of an independent region (e.g. "35130-ERNAKULAM")
+  //   - A derived region id (e.g. "UNDER_ZO")
+  // The effectiveFrom date determines whether a region that was
+  // formerly derived is now independent for the given date.
+  resolveRO(roRaw, dateStr, zone) {
+    const setup = this.get(zone);
+    if (!setup) return 'UNDER_ZO'; // no setup = everything derived
+    const roNorm = this.norm(roRaw || 'NULL');
+    // Find matching bpRegion entry by normalised roRaw or roName
+    const match = (setup.bpRegions || []).find(r =>
+      this.norm(r.roRaw) === roNorm ||
+      this.norm(r.roName) === roNorm
+    );
+    if (!match) return 'UNDER_ZO'; // unknown RO = derived pending review
+    if (!match.isReal) return match.derivedId || 'UNDER_ZO';
+    // Check effectiveFrom — before this date treat as derived
+    if (match.effectiveFrom && dateStr < match.effectiveFrom)
+      return match.derivedId || 'UNDER_ZO';
+    return match.scopeKey;
+  },
+
+  // ── Get all active independent scope keys for a date ─────────
+  // Returns the list of region scopeKeys that should appear as
+  // independent scopes in the summary for a given date.
+  // __ZO__ (derived region) is always included.
+  getActiveScopeKeys(dateStr, zone) {
+    const setup = this.get(zone);
+    if (!setup) return ['__ZO__'];
+    const keys = new Set(['__ZO__']);
+    for (const r of (setup.bpRegions || [])) {
+      if (!r.isReal) continue;
+      // Only include if effectiveFrom has been reached for this date
+      if (r.effectiveFrom && dateStr < r.effectiveFrom) continue;
+      if (r.scopeKey) keys.add(r.scopeKey);
+    }
+    return [...keys].sort((a, b) => {
+      if (a === '__ZO__') return -1;
+      if (b === '__ZO__') return 1;
+      return a.localeCompare(b);
+    });
+  },
+
+  // ── Get derived region label for display ─────────────────────
+  getDerivedLabel(derivedId, zone) {
+    const setup = this.get(zone);
+    if (!setup) return 'UNDER ZO';
+    const dr = (setup.derivedRegions || []).find(d => d.id === derivedId);
+    return dr?.label || 'UNDER ZO';
+  },
+
+  // ── Get default derived region id ────────────────────────────
+  getDefaultDerivedId(zone) {
+    const setup = this.get(zone);
+    if (!setup) return 'UNDER_ZO';
+    const def = (setup.derivedRegions || []).find(d => d.isDefault);
+    return def?.id || 'UNDER_ZO';
+  },
+
+  // ── Resolve RD region → BP scopeKey ──────────────────────────
+  // Uses the rdMappings table. If no mapping found, returns derived.
+  resolveRDRegion(rdRegion, zone) {
+    const setup = this.get(zone);
+    if (!setup) return 'UNDER_ZO';
+    const rdNorm = (rdRegion || '').trim().toUpperCase();
+    if (!rdNorm) return 'UNDER_ZO'; // blank = derived
+    const mapping = (setup.rdMappings || []).find(m =>
+      m.rdRegion.trim().toUpperCase() === rdNorm
+    );
+    if (mapping) return mapping.bpScopeKey;
+    return 'UNDER_ZO'; // no mapping = derived
+  },
+
+  // ── Auto-suggest RD→BP matches by name ───────────────────────
+  // Extracts the name part from each BP RO (after the NNNNN- prefix)
+  // and case-insensitively compares to each RD region name.
+  autoSuggestRDMappings(bpRegions, rdRegions) {
+    const suggestions = [];
+    for (const rd of rdRegions) {
+      const rdNorm = rd.trim().toUpperCase();
+      // Try to find a BP region whose name part matches
+      let matched = null;
+      let matchType = 'default';
+      for (const bp of bpRegions) {
+        if (!bp.isReal) continue;
+        const bpName = bp.roName.trim().toUpperCase();
+        if (bpName === rdNorm) {
+          matched = bp.scopeKey;
+          matchType = 'auto';
+          break;
+        }
+        // Partial: RD name is contained in BP name or vice versa
+        if (bpName.includes(rdNorm) || rdNorm.includes(bpName)) {
+          if (!matched) { matched = bp.scopeKey; matchType = 'partial'; }
+        }
+      }
+      suggestions.push({
+        rdRegion: rd || 'NULL',
+        bpScopeKey: matched || 'UNDER_ZO',
+        matchType,
+        status: 'pending'
+      });
+    }
+    return suggestions;
+  },
+
+  // ── Detect new BP RO values not in registry ───────────────────
+  // Returns array of new normalised roRaw values not yet seen.
+  detectNewBPROs(rows, zone) {
+    const setup = this.get(zone);
+    const knownRaws = new Set(
+      (setup?.bpRegions || []).map(r => this.norm(r.roRaw))
+    );
+    const pendingRaws = new Set(
+      (setup?.pendingReview || [])
+        .filter(p => p.type === 'new_bp_ro')
+        .map(p => this.norm(p.roRaw))
+    );
+    const newROs = new Set();
+    rows.forEach(r => {
+      const ro = this.norm(r['RO'] || '') || 'NULL';
+      if (!knownRaws.has(ro) && !pendingRaws.has(ro)) newROs.add(r['RO'] || '');
+    });
+    return [...newROs];
+  },
+
+  // ── Detect new RD region values not in rdMappings ────────────
+  detectNewRDRegions(rows, zone) {
+    const setup = this.get(zone);
+    const knownRDs = new Set(
+      (setup?.rdMappings || []).map(m => m.rdRegion.trim().toUpperCase())
+    );
+    const pendingRDs = new Set(
+      (setup?.pendingReview || [])
+        .filter(p => p.type === 'new_rd_region')
+        .map(p => (p.rdRegion || '').trim().toUpperCase())
+    );
+    const newRegions = new Set();
+    rows.forEach(r => {
+      const reg = (r['Region'] || '').trim() || 'NULL';
+      const regU = reg.toUpperCase();
+      if (!knownRDs.has(regU) && !pendingRDs.has(regU)) newRegions.add(reg);
+    });
+    return [...newRegions];
+  },
+
+  // ── Add new BP ROs to pendingReview ──────────────────────────
+  async addPendingBPROs(newROs, dateStr, fileName, zone) {
+    const zs = Cfg.get('zoneSetup') || {};
+    const setup = zs[zone] = zs[zone] || { pendingReview: [] };
+    setup.pendingReview = setup.pendingReview || [];
+    for (const roRaw of newROs) {
+      const roNorm = this.norm(roRaw || 'NULL');
+      const parts = roNorm.split('-');
+      setup.pendingReview.push({
+        id: `pr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+        type: 'new_bp_ro',
+        roRaw: roRaw || 'NULL',
+        roCode: /^\d+$/.test(parts[0]) ? parts[0] : null,
+        roName: parts.slice(1).join('-') || roNorm,
+        firstSeenDate: dateStr,
+        firstSeenFile: fileName,
+        status: 'pending',
+        detectedAt: new Date().toISOString(),
+        resolvedBy: null, resolvedAt: null, resolution: null
+      });
+    }
+    Cfg.set('zoneSetup', zs);
+    SchemaValidator._log('Region',
+      `New BP RO detected — ${newROs.map(r=>r||'NULL').join(', ')}`,
+      'WARN',
+      `File: ${fileName} | Date: ${dateStr} | Defaulting to UNDER ZO until admin reviews`
+    );
+  },
+
+  // ── Add new RD regions to pendingReview ──────────────────────
+  async addPendingRDRegions(newRegions, dateStr, fileName, zone) {
+    const zs = Cfg.get('zoneSetup') || {};
+    const setup = zs[zone] = zs[zone] || { pendingReview: [] };
+    setup.pendingReview = setup.pendingReview || [];
+    for (const reg of newRegions) {
+      setup.pendingReview.push({
+        id: `pr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+        type: 'new_rd_region',
+        rdRegion: reg || 'NULL',
+        firstSeenDate: dateStr,
+        firstSeenFile: fileName,
+        status: 'pending',
+        detectedAt: new Date().toISOString(),
+        resolvedBy: null, resolvedAt: null, resolution: null
+      });
+    }
+    Cfg.set('zoneSetup', zs);
+    SchemaValidator._log('Region',
+      `New RD region detected — ${newRegions.map(r=>r||'NULL').join(', ')}`,
+      'WARN',
+      `File: ${fileName} | Date: ${dateStr} | Defaulting to UNDER ZO until admin reviews`
+    );
+  },
+
+  // ── Save zone setup to config and push to GitHub ─────────────
+  async saveAndPush(zone, setupData, pat) {
+    const zs = Cfg.get('zoneSetup') || {};
+    zs[zone] = { ...setupData, lastUpdated: new Date().toISOString() };
+    Cfg.set('zoneSetup', zs);
+    if (pat) {
+      try {
+        await ConfigSync.push(false);
+        SchemaValidator._log('Region',
+          `Zone setup saved to GitHub — ${zone}`, 'OK',
+          `setupComplete: ${setupData.setupComplete} | ` +
+          `${(setupData.bpRegions||[]).length} BP regions | ` +
+          `${(setupData.rdMappings||[]).length} RD mappings`
+        );
+      } catch(e) {
+        SchemaValidator._log('Region', `Zone setup GitHub push failed — ${zone}`, 'ERR', e.message);
+      }
     }
   }
 };
@@ -3735,35 +4072,46 @@ const DE = {
     }
     return null;
   },
-  bpRegionName(ro){if(!ro||ro==='-')return 'UNDER ZO';return ro.replace(/^\d+-/,'');},
-  rdMatchesBPRegion(rdRegion,bpRO){
-    if(bpRO==='-')return rdRegion==='LCB-ERNAKULAM'||rdRegion==='UNDER ZO';
-    return rdRegion===this.bpRegionName(bpRO);
-  },
-  filterBP(rows,scope){
-    const norm = v => (v||'').split('-').map(p=>p.trim()).filter(Boolean).join('-');
-    const trimZ = v => (v||'').trim();
-    let r=rows.filter(x=>trimZ(x['ZO'])===trimZ(scope.zone));
-    if(scope.type==='region'){
-      if(scope.region==='__ZO__'){
-        // __ZO__ = rows where RO is blank, '-', or doesn't match any known region
-        const knownRegions = Cfg.get('activeZoneRegions') || [];
-        r=r.filter(x=>{ const ro=norm(x['RO']||''); return !ro||ro==='-'||(!knownRegions.includes(ro)&&ro!=='-'); });
+  filterBP(rows, scope) {
+    // Filter BP rows for a given scope using RegionRegistry.
+    // scope.dateStr is required for effective-date-aware resolution.
+    const trimZ = v => (v || '').trim();
+    let r = rows.filter(x => trimZ(x['ZO']) === trimZ(scope.zone));
+    if (scope.type === 'region') {
+      if (scope.region === '__ZO__') {
+        // Derived region: rows where resolved scope is the default derived id
+        const defaultDerived = RegionRegistry.getDefaultDerivedId(scope.zone);
+        r = r.filter(x => {
+          const resolved = RegionRegistry.resolveRO(x['RO'], scope.dateStr || '9999-99-99', scope.zone);
+          return resolved === defaultDerived || resolved === 'UNDER_ZO';
+        });
       } else {
-        r=r.filter(x=>norm(x['RO'])===norm(scope.region));
+        // Real region: rows where resolved scope matches this scopeKey
+        r = r.filter(x =>
+          RegionRegistry.resolveRO(x['RO'], scope.dateStr || '9999-99-99', scope.zone) === scope.region
+        );
       }
+    } else if (scope.type === 'branch') {
+      r = r.filter(x => x['BRANCH'] === scope.branchKey);
     }
-    else if(scope.type==='branch'){r=r.filter(x=>x['BRANCH']===scope.branchKey);}
     return r;
   },
-  filterRD(rows,scope){
-    let r=rows.filter(x=>x['Zone']===scope.zone);
-    if(scope.type==='region'){const bpRO=scope.region==='__ZO__'?'-':scope.region;r=r.filter(x=>this.rdMatchesBPRegion(x['Region'],bpRO));}
-    else if(scope.type==='branch'){
-      // branchKey format: "SOLID-BRANCHNAME" e.g. "33640-ATTIPRA"
-      const solid=scope.branchKey.split('-')[0];
-      // String comparison — SOLID may be stored as number or string in RD sheet
-      r=r.filter(x=>String(x['SOLID']).trim()===String(solid).trim());
+  filterRD(rows, scope) {
+    // Filter RD rows using rdMappings from RegionRegistry.
+    // RD Zone column compared to scope.zone; Region resolved via rdMappings.
+    let r = rows.filter(x => (x['Zone'] || '').trim() === (scope.zone || '').trim());
+    if (scope.type === 'region') {
+      r = r.filter(x => {
+        const rdReg = (x['Region'] || '').trim() || 'NULL';
+        const resolved = RegionRegistry.resolveRDRegion(rdReg, scope.zone);
+        if (scope.region === '__ZO__')
+          return resolved === 'UNDER_ZO' || resolved === RegionRegistry.getDefaultDerivedId(scope.zone);
+        return resolved === scope.region;
+      });
+    } else if (scope.type === 'branch') {
+      // RD branch: match SOLID + "-" + Branchname against BP BRANCH (NNNNN-BranchName)
+      const solid = scope.branchKey.split('-')[0];
+      r = r.filter(x => String(x['SOLID']).trim() === String(solid).trim());
     }
     return r;
   },
@@ -3887,79 +4235,61 @@ const DE = {
     }
     return result;
   },
-  async getAllRegions(dateStr,zone,fallback){
-    const bpF=await this.getBP(dateStr,fallback);
-    if(!bpF){
-      // ── chartData fallback: derive regions from summary scopeKeys ──────────
-      const store = await ChartStore._getStore(zone);
-      const datesToTry = [dateStr];
-      if (fallback) {
-        const sorted = await ChartStore.getSortedDates(zone); // ascending
-        sorted.filter(d=>d<dateStr).reverse().slice(0,10).forEach(d=>datesToTry.push(d));
+  async getAllRegions(dateStr, zone, fallback) {
+    // Derive region list from RegionRegistry — no more RO column scanning.
+    // This ensures consistent scope keys regardless of file formatting variations.
+    const setupComplete = RegionRegistry.isSetupComplete(zone);
+
+    if (setupComplete) {
+      // Registry-based: get active scopes for this date (effective-date-aware)
+      const scopeKeys = RegionRegistry.getActiveScopeKeys(dateStr, zone);
+      const data = {};
+      for (const region of scopeKeys) {
+        data[region] = await this.getAgg(
+          dateStr, { type: 'region', zone, region, dateStr }, fallback
+        );
       }
-      for (const td of datesToTry) {
-        const entry = store?.dates?.[td];
-        if (!entry) continue;
-        const regionKeys = Object.keys(entry).filter(k=>k!=='__zone__');
-        if (!regionKeys.length) continue;
-        const regions = regionKeys.sort((a,b)=>{
-          if(a==='__ZO__')return -1; if(b==='__ZO__')return 1; return a.localeCompare(b);
-        });
-        const data={};
-        for(const region of regions)
-          data[region]=await this.getAgg(td,{type:'region',zone,region},false);
-        return{regions,data,actual:td,isFB:td!==dateStr};
+      // If live data returned nothing, fall back to ChartStore
+      const hasLiveData = Object.values(data).some(v => v !== null && !v.bpMissing);
+      if (!hasLiveData) {
+        const store = await ChartStore._getStore(zone);
+        const entry = store?.dates?.[dateStr];
+        if (entry) {
+          const storeRegions = Object.keys(entry)
+            .filter(k => k !== '__zone__')
+            .sort((a,b) => { if(a==='__ZO__')return -1; if(b==='__ZO__')return 1; return a.localeCompare(b); });
+          const storeData = {};
+          for (const r of storeRegions)
+            storeData[r] = await this.getAgg(dateStr, { type:'region', zone, region:r, dateStr }, false);
+          return { regions: storeRegions, data: storeData, actual: dateStr, isFB: false };
+        }
+        return null;
       }
-      return null;
-      // ── end chartData fallback ─────────────────────────────────────────────
+      const bpF = await this.getBP(dateStr, fallback);
+      return { regions: scopeKeys, data, actual: bpF?.actual || dateStr, isFB: bpF?.isFB || false };
     }
-    const fs=Object.values(bpF.data.sheets)[0];if(!fs)return null;
-    const rset=new Set();
-    // ── Layer 2: RO value validation ──────────────────────────────
-    // Valid region codes are 5-digit numeric prefixes (e.g. 35130-ERNAKULAM).
-    // Branch codes appear in BRANCH column but can slip into RO column due to
-    // data entry errors in source Excel files. Detect and reject them here.
-    // A valid RO value is either '-' (under ZO) or matches the known region
-    // code pattern: 5-digit number followed by a hyphen and region name.
-    // Anything that looks like a branch code (same 5-digit format but not a
-    // known region) is treated as a data anomaly — rows roll up into __ZO__.
-    const knownRegions = Cfg.get('activeZoneRegions') || null;
-    const anomalies = new Set();
-    // Normalise helper — trim spaces around hyphens and outer whitespace
-    const norm = ro => ro ? ro.split('-').map(p => p.trim()).filter(Boolean).join('-') : '';
-    fs.rows.filter(r => (r['ZO']||'').trim() === zone.trim()).forEach(r => {
-      const roRaw = r['RO'];
-      if (!roRaw || roRaw.trim() === '-' || roRaw.trim() === '') { rset.add('__ZO__'); return; }
-      const ro = norm(roRaw); // normalise before any comparison
-      // If a whitelist of known regions exists, use it (whitelist is already normalised)
-      if (knownRegions && knownRegions.length) {
-        if (knownRegions.includes(ro)) { rset.add(ro); }
-        else { anomalies.add(ro); rset.add('__ZO__'); } // treat as under-ZO
-        return;
-      }
-      // No whitelist: heuristic — a valid RO looks like 'NNNNN-NAME'
-      // A branch code also looks like this BUT it should match a BRANCH value
-      // Check: if the same value appears in the BRANCH column of ANY row
-      // for this zone, it's a branch code appearing in the wrong column
-      const appearsAsBranch = fs.rows.some(r2 =>
-        (r2['ZO']||'').trim() === zone.trim() && norm(r2['BRANCH']||'') === ro
-      );
-      if (appearsAsBranch) {
-        anomalies.add(ro);
-        rset.add('__ZO__'); // roll up into ZO scope, don't create phantom region
-      } else {
-        rset.add(ro);
-      }
-    });
-    if (anomalies.size) {
-      AppLog.add('Sheets', `RO anomaly detected — ${dateStr}`, 'WARN',
-        `${[...anomalies].join(', ')} appear in RO column but are BRANCH codes — rolled up into __ZO__`);
+
+    // Setup not complete — fall back to ChartStore scope keys (summary data)
+    const store = await ChartStore._getStore(zone);
+    const datesToTry = [dateStr];
+    if (fallback) {
+      const sorted = await ChartStore.getSortedDates(zone);
+      sorted.filter(d => d < dateStr).reverse().slice(0, 10).forEach(d => datesToTry.push(d));
     }
-    // ── end RO validation ─────────────────────────────────────────
-    const regions=[...rset].sort((a,b)=>{if(a==='__ZO__')return -1;if(b==='__ZO__')return 1;return a.localeCompare(b);});
-    const data={};
-    for(const region of regions)data[region]=await this.getAgg(dateStr,{type:'region',zone,region},fallback);
-    return{regions,data,actual:bpF.actual,isFB:bpF.isFB};
+    for (const td of datesToTry) {
+      const entry = store?.dates?.[td];
+      if (!entry) continue;
+      const regionKeys = Object.keys(entry).filter(k => k !== '__zone__');
+      if (!regionKeys.length) continue;
+      const regions = regionKeys.sort((a,b) => {
+        if(a==='__ZO__')return -1; if(b==='__ZO__')return 1; return a.localeCompare(b);
+      });
+      const data = {};
+      for (const region of regions)
+        data[region] = await this.getAgg(td, { type:'region', zone, region, dateStr:td }, false);
+      return { regions, data, actual: td, isFB: td !== dateStr };
+    }
+    return null;
   },
   async getBranches(zone,region){
     // Try local bpFiles first, fall back to Sheets API for latest available date
@@ -4521,14 +4851,14 @@ const Dashboard = {
     const colDefs=this.getColDefs();
     const latestDate=this.state.periodDates['latest'];
     if (!latestDate) AppLog.add('Dashboard', 'renderZone: latestDate is null — periodDates not set', 'WARN');
-    const latest=latestDate?await DE.getAgg(latestDate,{type:'zone',zone},fb):null;
+    const latest=latestDate?await DE.getAgg(latestDate,{type:'zone',zone,dateStr:latestDate},fb):null;
     if (!latest && latestDate) AppLog.add('Dashboard', `renderZone: getAgg returned null for ${latestDate}`, 'WARN',
       `zone=${zone} fb=${fb}`);
     const pmap={},fns=[];
     const neededPeriods=new Set(colDefs.filter(c=>c.periodKey!=='latest').map(c=>c.periodKey));
     for(const pk of neededPeriods){
       const ds=this.state.periodDates[pk];if(!ds)continue;
-      const pd=await DE.getAgg(ds,{type:'zone',zone},fb);
+      const pd=await DE.getAgg(ds,{type:'zone',zone,dateStr:ds},fb);
       if(pd){pmap[pk]=pd;if(pd.isFB)fns.push(`${(Cfg.get('periods')||{})[pk]?.label}: using ${DL.fmt(DL.parseYMD(pd.actual),'dd-mm-yyyy')}`);}
     }
     this._buildTabKey='zone';document.getElementById('zoneTbl').innerHTML=this.buildTable(latest,pmap,params,colDefs);
@@ -4646,12 +4976,12 @@ const Dashboard = {
     const fb=Cfg.get('fallback');
     const params=this.getParamDefs(),colDefs=this.getColDefs();
     const latestDate=this.state.periodDates['latest'];
-    const latest=latestDate?await DE.getAgg(latestDate,{type:'region',zone,region},fb):null;
+    const latest=latestDate?await DE.getAgg(latestDate,{type:'region',zone,region,dateStr:latestDate},fb):null;
     const pmap={},fns=[];
     const needed=new Set(colDefs.filter(c=>c.periodKey!=='latest').map(c=>c.periodKey));
     for(const pk of needed){
       const ds=this.state.periodDates[pk];if(!ds)continue;
-      const pd=await DE.getAgg(ds,{type:'region',zone,region},fb);
+      const pd=await DE.getAgg(ds,{type:'region',zone,region,dateStr:ds},fb);
       if(pd){pmap[pk]=pd;if(pd.isFB)fns.push(`${(Cfg.get('periods')||{})[pk]?.label}: ${DL.fmt(DL.parseYMD(pd.actual),'dd-mm-yyyy')}`);}
     }
     this._buildTabKey='region';document.getElementById('regionTbl').innerHTML=this.buildTable(latest,pmap,params,colDefs);
@@ -4728,12 +5058,12 @@ const Dashboard = {
     const fb=Cfg.get('fallback');
     const params=this.getParamDefs(),colDefs=this.getColDefs();
     const latestDate=this.state.periodDates['latest'];
-    const latest=latestDate?await DE.getAgg(latestDate,{type:'branch',zone,branchKey},fb):null;
+    const latest=latestDate?await DE.getAgg(latestDate,{type:'branch',zone,branchKey,dateStr:latestDate},fb):null;
     const pmap={},fns=[];
     const needed=new Set(colDefs.filter(c=>c.periodKey!=='latest').map(c=>c.periodKey));
     for(const pk of needed){
       const ds=this.state.periodDates[pk];if(!ds)continue;
-      const pd=await DE.getAgg(ds,{type:'branch',zone,branchKey},fb);
+      const pd=await DE.getAgg(ds,{type:'branch',zone,branchKey,dateStr:ds},fb);
       if(pd){pmap[pk]=pd;if(pd.isFB)fns.push(`${(Cfg.get('periods')||{})[pk]?.label}: ${DL.fmt(DL.parseYMD(pd.actual),'dd-mm-yyyy')}`);}
     }
     this._buildTabKey='branch';document.getElementById('branchTbl').innerHTML=this.buildTable(latest,pmap,params,colDefs);
@@ -4924,7 +5254,7 @@ const Uploader = {
               // Extract aggregates and update summary
               if (zone && type === 'bp') {
                 DE._cache = {};
-                const agg = await DE.getAgg(dk, { type:'zone', zone }, false);
+                const agg = await DE.getAgg(dk, { type:'zone', zone, dateStr:dk }, false);
                 if (agg?.values) await ChartStore.writeDate(dk, zone, { '__zone__': agg.values });
               }
             }
@@ -5431,7 +5761,7 @@ const DataIntegrity = {
 
       // Compute zone + region aggregates
       DE._cache = {};
-      const zoneAgg = await DE.getAgg(dateStr, { type:'zone', zone }, false);
+      const zoneAgg = await DE.getAgg(dateStr, { type:'zone', zone, dateStr }, false);
       if (zoneAgg?.values && Object.keys(zoneAgg.values).length)
         result.scopeMap['__zone__'] = zoneAgg.values;
 
@@ -5442,23 +5772,31 @@ const DataIntegrity = {
           if (rAgg?.values && Object.keys(rAgg.values).length)
             result.scopeMap[rk] = rAgg.values;
         }
-        // Auto-update the known region whitelist from the first date that has regions
-        // This is used by getAllRegions Layer 2 validation on subsequent reads
-        const normRO = ro => ro ? ro.split('-').map(p => p.trim()).filter(Boolean).join('-') : '';
-        const validRegions = allRegions.regions
-          .filter(r => r !== '__ZO__')
-          .map(r => normRO(r)); // normalise before storing in whitelist
-        if (validRegions.length > 0) {
-          const existing = Cfg.get('activeZoneRegions') || [];
-          const merged = [...new Set([...existing.map(normRO), ...validRegions])].sort();
-          if (merged.length !== existing.length ||
-              merged.some((r,i) => r !== existing[i])) {
-            Cfg.set('activeZoneRegions', merged);
-            AppLog.add('App', `Region whitelist updated — ${merged.length} regions`, 'OK',
-              merged.join(', '));
-          }
-        }
       }
+
+      // ── New RO/Region detection ────────────────────────────────
+      // Detect any BP RO values or RD Region values not in the registry.
+      // New values default to UNDER ZO and are queued for admin review.
+      try {
+        const bpRows = Object.values(
+          (await DB.get('bpFiles', dateStr))?.sheets || {}
+        ).flatMap(s => s.rows || []);
+        const newBPROs = RegionRegistry.detectNewBPROs(bpRows, zone);
+        if (newBPROs.length) {
+          const entry2 = await DB.get('fileIndex', dateStr);
+          await RegionRegistry.addPendingBPROs(newBPROs, dateStr, entry2?.bpName || dateStr, zone);
+        }
+      } catch(e) { /* non-fatal */ }
+      try {
+        const rdRows = Object.values(
+          (await DB.get('rdFiles', dateStr))?.sheets || {}
+        ).flatMap(s => s.rows || []);
+        const newRDRegs = RegionRegistry.detectNewRDRegions(rdRows, zone);
+        if (newRDRegs.length) {
+          const entry3 = await DB.get('fileIndex', dateStr);
+          await RegionRegistry.addPendingRDRegions(newRDRegs, dateStr, entry3?.rdName || dateStr, zone);
+        }
+      } catch(e) { /* non-fatal */ }
 
       // ── Aggregation tally check ────────────────────────────────
       if (Object.keys(result.scopeMap).length > 1) {
@@ -5680,10 +6018,19 @@ const DataIntegrity = {
       log('', 'App', 'Starting Force Rebuild', 'RUN', `Zone: ${zone}`);
       setProgress(5, 'Starting...');
 
-      // ── Reset stale schema references and region whitelist ────────
-      // These will be rebuilt fresh with normalised values during this run.
-      // Stale values would cause RO matching failures on files with spacing variations.
-      Cfg.set('activeZoneRegions', []);
+      // ── Check zone setup is complete before rebuilding ─────────
+      if (!RegionRegistry.isSetupComplete(zone)) {
+        log('', 'Region', 'Zone setup not complete — Force Rebuild blocked', 'ERR',
+          'Complete Zone & Region setup in Admin Panel → Zone tab before rebuilding.');
+        if (btn) { btn.disabled = false; btn.textContent = '🔄 Force Rebuild (Recovery)'; }
+        Admin.showSec('zone');
+        ZoneSetupWizard.start(zone);
+        return;
+      }
+
+      // ── Reset schema references ───────────────────────────────
+      // Schema refs are reset so they are rebuilt from source files this run.
+      // Region registry (zoneSetup) is NOT cleared — it is admin-maintained.
       Cfg.set('bpSchema', null);
       Cfg.set('rdSchema', null);
       log('', 'App', 'Schema references cleared — will rebuild from source files', 'OK', '');
@@ -6186,21 +6533,14 @@ const Admin = {
     const sel=document.getElementById('zoneSelAdmin');
     const cur=Cfg.get('activeZone');
     sel.innerHTML='<option value="">— Select Zone —</option>'+zones.map(z=>`<option value="${z}" ${z===cur?'selected':''}>${z}</option>`).join('');
-    if(cur)await this.showZoneRegions(cur);
+    if(cur) await ZoneSetupWizard.init(cur);
+    else ZoneSetupWizard.init(null);
   },
   async onZoneChange(){
     const z=document.getElementById('zoneSelAdmin').value;
-    Cfg.set('activeZone',z);await this.showZoneRegions(z);await this.loadSheetsUI();
-  },
-  async showZoneRegions(zone){
-    if(!zone){document.getElementById('zoneRegPreview').style.display='none';return;}
-    const dates=await FM.availDates('bp');if(!dates.length)return;
-    const fd=await DB.get('bpFiles',dates[0]);if(!fd)return;
-    const fs=Object.values(fd.sheets)[0];
-    const rset=new Set(fs.rows.filter(r=>r['ZO']===zone).map(r=>r['RO']==='-'?'UNDER ZO':r['RO']));
-    document.getElementById('zoneRegList').innerHTML=[...rset].sort((a,b)=>{if(a==='UNDER ZO')return -1;if(b==='UNDER ZO')return 1;return a.localeCompare(b);})
-      .map(r=>`<span style="background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:3px 9px;font-size:11px">${r}</span>`).join('');
-    document.getElementById('zoneRegPreview').style.display='block';
+    Cfg.set('activeZone',z);
+    await ZoneSetupWizard.onZoneSelected(z);
+    await this.loadSheetsUI();
   },
 
   // Periods UI — independent draggable column cards
@@ -7620,6 +7960,601 @@ const Carousel = {
 // ================================================================
 // ADMINLOGUI — calendar + session browser + filtered log view
 // ================================================================
+// ================================================================
+// ZONE SETUP WIZARD — 4-step wizard for zone & region authentication
+// ================================================================
+const ZoneSetupWizard = {
+  zone: null,
+  step: 1,
+  isRevalidation: false,
+  draft: {
+    derivedLabel: 'UNDER ZO',
+    bpRegions: [],   // [{roRaw, roCode, roName, scopeKey, isReal, effectiveFrom, isNew}]
+    rdMappings: []   // [{rdRegion, bpScopeKey, matchType, status}]
+  },
+
+  // ── Initialise wizard for a zone ─────────────────────────────
+  async init(zone) {
+    this.zone = zone;
+    if (!zone) { this.goStep(1); return; }
+    const setup = RegionRegistry.get(zone);
+    if (setup) {
+      // Pre-fill draft from existing config
+      this.draft.derivedLabel = setup.derivedRegions?.[0]?.label || 'UNDER ZO';
+      this.draft.bpRegions = JSON.parse(JSON.stringify(setup.bpRegions || []));
+      this.draft.rdMappings = JSON.parse(JSON.stringify(setup.rdMappings || []));
+      document.getElementById('derivedRegionLabel').value = this.draft.derivedLabel;
+    }
+    // Show pending section if pending items exist
+    this._renderPendingSection();
+    // If setup incomplete, start wizard; otherwise show summary
+    if (!RegionRegistry.isSetupComplete(zone)) {
+      this.goStep(1);
+    } else {
+      this.goStep(4);
+      this._renderStep4();
+    }
+  },
+
+  // ── Start wizard (initial or revalidation) ───────────────────
+  async start(zone, isRevalidation = false) {
+    this.zone = zone || Cfg.get('activeZone');
+    this.isRevalidation = isRevalidation;
+    if (isRevalidation) {
+      const setup = RegionRegistry.get(this.zone);
+      this.draft.bpRegions = JSON.parse(JSON.stringify(setup?.bpRegions || []));
+      this.draft.rdMappings = JSON.parse(JSON.stringify(setup?.rdMappings || []));
+      this.draft.derivedLabel = setup?.derivedRegions?.[0]?.label || 'UNDER ZO';
+    } else {
+      this.draft.bpRegions = [];
+      this.draft.rdMappings = [];
+      this.draft.derivedLabel = 'UNDER ZO';
+    }
+    this.goStep(1);
+  },
+
+  // ── Start revalidation ───────────────────────────────────────
+  async startRevalidation() {
+    const zone = Cfg.get('activeZone');
+    if (!zone) { alert('Select a zone first.'); return; }
+    AppLog.add('Region', `Force Revalidation started — ${zone}`, 'RUN',
+      'Admin initiated revalidation of all BP/RD files');
+    await this.start(zone, true);
+    await this._loadBPRows();
+    await this._renderStep2();
+    this.goStep(2);
+  },
+
+  // ── Zone selected in dropdown ─────────────────────────────────
+  async onZoneSelected(zone) {
+    Cfg.set('activeZone', zone);
+    this.zone = zone;
+    await this.init(zone);
+  },
+
+  // ── Navigate between steps ────────────────────────────────────
+  goStep(n) {
+    this.step = n;
+    for (let i = 1; i <= 4; i++) {
+      const stepDiv = document.getElementById(`zoneWizStep${i}`);
+      const stepBtn = document.getElementById(`wzStep${i}`);
+      if (stepDiv) stepDiv.style.display = i === n ? 'block' : 'none';
+      if (stepBtn) {
+        stepBtn.style.background = i === n ? 'var(--blue)' : (i < n ? 'var(--green)' : 'var(--bg3)');
+        stepBtn.style.color = i <= n ? '#fff' : 'var(--text3)';
+      }
+    }
+    const backBtn = document.getElementById('wizBackBtn');
+    const nextBtn = document.getElementById('wizNextBtn');
+    if (backBtn) backBtn.style.display = n > 1 ? 'block' : 'none';
+    if (nextBtn) {
+      nextBtn.style.display = n < 4 ? 'block' : 'none';
+      nextBtn.textContent = 'Next →';
+    }
+    const confirmBtn = document.getElementById('wizConfirmBtn');
+    if (confirmBtn) confirmBtn.style.display = n === 4 ? 'block' : 'none';
+  },
+
+  async nextStep() {
+    if (this.step === 1) {
+      if (!this.zone) { this._status1('⚠ Please select a zone first.'); return; }
+      await this._loadBPRows();
+      await this._renderStep2();
+      this.goStep(2);
+    } else if (this.step === 2) {
+      this._saveDraftBP();
+      await this._loadRDRows();
+      await this._renderStep3();
+      this.goStep(3);
+    } else if (this.step === 3) {
+      this._saveDraftRD();
+      this._renderStep4();
+      this.goStep(4);
+    }
+  },
+
+  prevStep() {
+    if (this.step > 1) this.goStep(this.step - 1);
+  },
+
+  // ── Step 1 helpers ────────────────────────────────────────────
+  _status1(msg) {
+    const el = document.getElementById('zoneStep1Status');
+    if (el) el.textContent = msg;
+  },
+
+  // ── Load BP rows from FY End file ─────────────────────────────
+  async _loadBPRows() {
+    this._status1('Loading FY End BP file...');
+    const zone = this.zone;
+    // Find FY End date (earliest -03-31 date in fileIndex)
+    const allDates = await DB.keys('fileIndex');
+    const fyDate = allDates.filter(d => d.endsWith('-03-31')).sort()[0] ||
+                   allDates.sort()[0];
+    if (!fyDate) { this._status1('⚠ No FY End file found. Sync Drive first.'); return; }
+
+    const entry = await DB.get('fileIndex', fyDate);
+    if (!entry?.bpSheetId) { this._status1('⚠ FY End BP sheet not converted yet. Run Sync first.'); return; }
+
+    const sheetData = await SheetsAPI.buildBPFromSheet(
+      entry.bpSheetId, fyDate, zone, {}
+    ).catch(() => null);
+
+    if (!sheetData) { this._status1('⚠ Could not load FY End BP file. Check Drive access.'); return; }
+
+    const fs = Object.values(sheetData.sheets)[0];
+    this._bpRows = (fs?.rows || []).filter(r => (r['ZO']||'').trim() === zone.trim());
+    this._fyDate = fyDate;
+    this._fyBPFile = entry.bpName || fyDate;
+    this._status1(`✓ Loaded ${this._bpRows.length} rows from ${this._fyBPFile}`);
+  },
+
+  // ── Load RD rows from FY End file ─────────────────────────────
+  async _loadRDRows() {
+    const zone = this.zone;
+    const allDates = await DB.keys('fileIndex');
+    const fyDate = allDates.filter(d => d.endsWith('-03-31')).sort()[0] ||
+                   allDates.sort()[0];
+    if (!fyDate) return;
+    const entry = await DB.get('fileIndex', fyDate);
+    if (!entry?.rdSheetId) return;
+    const rdData = await SheetsAPI.buildRDFromSheet(
+      entry.rdSheetId, fyDate, zone
+    ).catch(() => null);
+    if (!rdData) return;
+    this._rdRows = Object.values(rdData.sheets).flatMap(s => s.rows || [])
+      .filter(r => (r['Zone']||'').trim() === zone.trim());
+    this._fyRDFile = entry.rdName || fyDate;
+  },
+
+  // ── Render Step 2 — BP RO table ──────────────────────────────
+  async _renderStep2() {
+    const rows = this._bpRows || [];
+    const existingConfig = RegionRegistry.get(this.zone);
+
+    // Collect unique normalised RO values
+    const roMap = new Map(); // normRO → {roRaw, count}
+    rows.forEach(r => {
+      const raw = r['RO'] || '';
+      const norm = RegionRegistry.norm(raw) || 'NULL';
+      if (!roMap.has(norm)) roMap.set(norm, { roRaw: raw || 'NULL', count: 0 });
+      roMap.get(norm).count++;
+    });
+
+    // Also collect from all files if revalidation
+    if (this.isRevalidation) {
+      const allDates = await DB.keys('fileIndex');
+      for (const dk of allDates) {
+        const fd = await DB.get('bpFiles', dk);
+        if (!fd) continue;
+        const fs = Object.values(fd.sheets)[0];
+        (fs?.rows||[]).filter(r=>(r['ZO']||'').trim()===this.zone.trim()).forEach(r => {
+          const raw = r['RO'] || '';
+          const norm = RegionRegistry.norm(raw) || 'NULL';
+          if (!roMap.has(norm)) roMap.set(norm, { roRaw: raw || 'NULL', count: 0 });
+          roMap.get(norm).count++;
+        });
+      }
+    }
+
+    const fyDate = this._fyDate || Cfg.get('zoneSetup')?.[this.zone]?.fyEndDate || '';
+    const knownROs = new Set((existingConfig?.bpRegions||[]).map(r=>RegionRegistry.norm(r.roRaw)));
+
+    let html = `<table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead><tr style="background:var(--bg3);color:var(--text2)">
+        <th style="padding:7px 6px;text-align:left;border-bottom:1px solid var(--border)">
+          Independent ☑</th>
+        <th style="padding:7px 6px;text-align:left;border-bottom:1px solid var(--border)">
+          RO Value</th>
+        <th style="padding:7px 6px;text-align:left;border-bottom:1px solid var(--border)">
+          Effective From</th>
+      </tr></thead><tbody>`;
+
+    for (const [norm, info] of [...roMap.entries()].sort()) {
+      const isNew = !knownROs.has(norm);
+      const existing = (existingConfig?.bpRegions||[]).find(r=>RegionRegistry.norm(r.roRaw)===norm);
+      const isReal = existing ? existing.isReal : (norm !== 'NULL');
+      const effFrom = existing?.effectiveFrom || fyDate;
+      const rowBg = isNew ? 'background:rgba(240,165,0,.12)' : '';
+      const newBadge = isNew ? '<span style="background:var(--amber,#f0a500);color:#000;font-size:9px;border-radius:3px;padding:1px 4px;margin-left:4px">NEW</span>' : '';
+      const dispVal = norm === 'NULL'
+        ? '<span style="color:var(--amber,#f0a500);font-style:italic">NULL</span>'
+        : `<code style="font-size:11px">${norm}</code>`;
+
+      html += `<tr style="${rowBg};border-bottom:1px solid var(--border)">
+        <td style="padding:7px 6px;text-align:center">
+          <input type="checkbox" data-ro="${norm}" class="bp-ro-chk" ${isReal?'checked':''}>
+        </td>
+        <td style="padding:7px 6px">${dispVal}${newBadge}</td>
+        <td style="padding:7px 6px">
+          <input type="date" data-ro="${norm}" class="bp-ro-eff"
+            value="${effFrom}" style="font-size:11px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text1);padding:3px 5px"
+            ${!isReal?'disabled':''}>
+        </td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+
+    // Add JS to enable/disable date field when checkbox toggled
+    html += `<script>document.querySelectorAll('.bp-ro-chk').forEach(chk=>{
+      chk.addEventListener('change',function(){
+        const eff=document.querySelector('.bp-ro-eff[data-ro="'+this.dataset.ro+'"]');
+        if(eff)eff.disabled=!this.checked;
+      });
+    });<\/script>`;
+
+    document.getElementById('bpROTable').innerHTML = html;
+  },
+
+  // ── Save draft BP from table ──────────────────────────────────
+  _saveDraftBP() {
+    const label = document.getElementById('derivedRegionLabel')?.value || 'UNDER ZO';
+    this.draft.derivedLabel = label;
+    const chks = document.querySelectorAll('.bp-ro-chk');
+    this.draft.bpRegions = [];
+    chks.forEach(chk => {
+      const norm = chk.dataset.ro;
+      const isReal = chk.checked;
+      const effInput = document.querySelector(`.bp-ro-eff[data-ro="${norm}"]`);
+      const effFrom = effInput?.value || this._fyDate || '';
+      const parts = norm.split('-');
+      const code = /^\d+$/.test(parts[0]) ? parts[0] : null;
+      const name = parts.slice(1).join('-') || norm;
+      this.draft.bpRegions.push({
+        roRaw: norm,
+        roCode: code,
+        roName: name,
+        scopeKey: isReal ? norm : null,
+        isReal,
+        derivedId: isReal ? null : 'UNDER_ZO',
+        effectiveFrom: isReal ? effFrom : null,
+        status: 'authorised',
+        firstSeenDate: this._fyDate || '',
+        firstSeenFile: this._fyBPFile || '',
+        authorisedBy: 'admin',
+        authorisedAt: new Date().toISOString()
+      });
+    });
+  },
+
+  // ── Render Step 3 — RD matching table ────────────────────────
+  async _renderStep3() {
+    const rows = this._rdRows || [];
+    // Unique RD region values
+    const rdSet = new Set();
+    rows.forEach(r => rdSet.add((r['Region']||'').trim() || 'NULL'));
+    const rdRegions = [...rdSet].sort();
+
+    // Auto-suggest matches
+    const suggestions = RegionRegistry.autoSuggestRDMappings(
+      this.draft.bpRegions.filter(r => r.isReal), rdRegions
+    );
+    // Merge with existing confirmed mappings
+    const existingMappings = RegionRegistry.get(this.zone)?.rdMappings || [];
+    const merged = suggestions.map(s => {
+      const existing = existingMappings.find(
+        m => m.rdRegion.trim().toUpperCase() === s.rdRegion.trim().toUpperCase()
+      );
+      if (existing?.status === 'confirmed') return { ...s, ...existing };
+      return s;
+    });
+    this.draft.rdMappings = merged;
+
+    // Build dropdown options: real BP regions + UNDER ZO
+    const bpOpts = this.draft.bpRegions
+      .filter(r => r.isReal)
+      .map(r => `<option value="${r.scopeKey}">${r.roName}</option>`)
+      .join('');
+    const allOpts = `<option value="UNDER_ZO">— ${this.draft.derivedLabel} —</option>${bpOpts}`;
+
+    let html = `<table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead><tr style="background:var(--bg3);color:var(--text2)">
+        <th style="padding:7px 6px;text-align:left;border-bottom:1px solid var(--border)">RD Region</th>
+        <th style="padding:7px 6px;text-align:left;border-bottom:1px solid var(--border)">Matched BP Region</th>
+        <th style="padding:7px;border-bottom:1px solid var(--border)">Match</th>
+      </tr></thead><tbody>`;
+
+    merged.forEach((m, i) => {
+      const rdDisp = m.rdRegion === 'NULL'
+        ? '<span style="color:var(--amber,#f0a500);font-style:italic">NULL</span>'
+        : `<code>${m.rdRegion}</code>`;
+      const matchIcon = m.matchType === 'auto' ? '✅' : m.matchType === 'partial' ? '🔶' : '⚠️';
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:7px 6px">${rdDisp}</td>
+        <td style="padding:7px 6px">
+          <select data-idx="${i}" class="rd-map-sel" style="font-size:11px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text1);padding:3px 5px;width:100%">
+            ${allOpts}
+          </select>
+        </td>
+        <td style="padding:7px;text-align:center" title="${m.matchType}">${matchIcon}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById('rdMatchTable').innerHTML = html;
+
+    // Set select values after render
+    document.querySelectorAll('.rd-map-sel').forEach(sel => {
+      const idx = parseInt(sel.dataset.idx);
+      sel.value = merged[idx]?.bpScopeKey || 'UNDER_ZO';
+    });
+  },
+
+  // ── Save draft RD from table ──────────────────────────────────
+  _saveDraftRD() {
+    document.querySelectorAll('.rd-map-sel').forEach(sel => {
+      const idx = parseInt(sel.dataset.idx);
+      if (this.draft.rdMappings[idx]) {
+        this.draft.rdMappings[idx].bpScopeKey = sel.value;
+        this.draft.rdMappings[idx].status = 'confirmed';
+        this.draft.rdMappings[idx].confirmedBy = 'admin';
+        this.draft.rdMappings[idx].confirmedAt = new Date().toISOString();
+      }
+    });
+  },
+
+  // ── Render Step 4 — Review & Confirm ─────────────────────────
+  _renderStep4() {
+    const realCount = this.draft.bpRegions.filter(r => r.isReal).length;
+    const derivedCount = this.draft.bpRegions.filter(r => !r.isReal).length;
+    const confirmedMaps = this.draft.rdMappings.filter(m => m.status === 'confirmed').length;
+    const defaultMaps = this.draft.rdMappings.filter(m => m.bpScopeKey === 'UNDER_ZO').length;
+
+    const summaryEl = document.getElementById('wizReviewSummary');
+    if (summaryEl) summaryEl.innerHTML = `
+      <strong>Zone:</strong> ${this.zone}<br>
+      <strong>Derived Region Label:</strong> ${this.draft.derivedLabel}<br>
+      <strong>BP Independent Regions:</strong> ${realCount}<br>
+      <strong>BP Derived (${this.draft.derivedLabel}):</strong> ${derivedCount}<br>
+      <strong>RD Mappings Confirmed:</strong> ${confirmedMaps}<br>
+      <strong>RD Defaulted to ${this.draft.derivedLabel}:</strong> ${defaultMaps}<br>
+      <br><strong>Independent Region Scopes:</strong><br>
+      ${this.draft.bpRegions.filter(r=>r.isReal).map(r=>
+        `• ${r.scopeKey} (from ${r.effectiveFrom || '—'})`
+      ).join('<br>') || '— None —'}
+    `;
+
+    const warnEl = document.getElementById('wizWarnings');
+    if (warnEl && defaultMaps > 0) {
+      warnEl.innerHTML = `<div style="background:rgba(240,165,0,.15);border:1px solid var(--amber,#f0a500);border-radius:6px;padding:10px;font-size:11px;color:var(--amber,#f0a500)">
+        ⚠ ${defaultMaps} RD region(s) are mapped to the derived region (${this.draft.derivedLabel}).
+        Their parameters will be aggregated under ${this.draft.derivedLabel}. You can remap them in Step 3.
+      </div>`;
+    } else if (warnEl) {
+      warnEl.innerHTML = '';
+    }
+  },
+
+  // ── Render pending section ────────────────────────────────────
+  _renderPendingSection() {
+    const zone = this.zone;
+    const setup = RegionRegistry.get(zone);
+    const pending = (setup?.pendingReview || []).filter(p => p.status === 'pending');
+    const section = document.getElementById('zonePendingSection');
+    const list = document.getElementById('pendingReviewList');
+    if (!section || !list) return;
+    if (!pending.length) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+
+    list.innerHTML = pending.map(p => {
+      const isRO = p.type === 'new_bp_ro';
+      const label = isRO ? (p.roRaw || 'NULL') : (p.rdRegion || 'NULL');
+      const typeLabel = isRO ? 'BP RO' : 'RD Region';
+      const bpOpts = (setup?.bpRegions||[]).filter(r=>r.isReal)
+        .map(r=>`<option value="${r.scopeKey}">${r.roName}</option>`).join('');
+      return `<div style="background:var(--bg3);border-radius:8px;padding:12px;margin-bottom:10px;border:1px solid var(--border)">
+        <div style="font-weight:600;font-size:12px;margin-bottom:4px">${typeLabel}: <code>${label}</code></div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:8px">
+          First seen: ${p.firstSeenDate} in ${p.firstSeenFile}
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px">
+          ${isRO
+            ? 'Is this a new independent region? Accept to add as a region scope. Reject to permanently group under ' + (setup?.derivedRegions?.[0]?.label||'UNDER ZO') + '.'
+            : 'Accept to map this RD region to a BP region. Reject to permanently map to derived region.'}
+        </div>
+        ${isRO ? '' : `<div style="margin-bottom:8px">
+          <label style="font-size:10px;color:var(--text3)">Map to BP Region:</label>
+          <select id="pendMap_${p.id}" style="font-size:11px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:3px;width:100%">
+            <option value="UNDER_ZO">— ${setup?.derivedRegions?.[0]?.label||'UNDER ZO'} —</option>
+            ${bpOpts}
+          </select>
+        </div>`}
+        <div style="display:flex;gap:8px">
+          <button class="btn-p" style="flex:1;font-size:11px" onclick="ZoneSetupWizard.resolvePending('${p.id}','accept','${zone}')">✓ Accept</button>
+          <button class="btn-s" style="flex:1;font-size:11px" onclick="ZoneSetupWizard.resolvePending('${p.id}','reject','${zone}')">✕ Reject → Derived</button>
+        </div>
+      </div>`;
+    }).join('');
+  },
+
+  // ── Resolve a pending review item ─────────────────────────────
+  async resolvePending(id, resolution, zone) {
+    const zs = Cfg.get('zoneSetup') || {};
+    const setup = zs[zone];
+    if (!setup) return;
+    const item = (setup.pendingReview || []).find(p => p.id === id);
+    if (!item) return;
+
+    item.status = resolution === 'accept' ? 'accepted' : 'rejected';
+    item.resolvedBy = 'admin';
+    item.resolvedAt = new Date().toISOString();
+    item.resolution = resolution;
+
+    if (resolution === 'accept') {
+      if (item.type === 'new_bp_ro') {
+        // Add as new independent region
+        const norm = RegionRegistry.norm(item.roRaw || 'NULL');
+        const parts = norm.split('-');
+        setup.bpRegions = setup.bpRegions || [];
+        setup.bpRegions.push({
+          roRaw: item.roRaw || 'NULL',
+          roCode: /^\d+$/.test(parts[0]) ? parts[0] : null,
+          roName: parts.slice(1).join('-') || norm,
+          scopeKey: norm,
+          isReal: true,
+          derivedId: null,
+          effectiveFrom: item.firstSeenDate,
+          status: 'authorised',
+          firstSeenDate: item.firstSeenDate,
+          firstSeenFile: item.firstSeenFile,
+          authorisedBy: 'admin',
+          authorisedAt: new Date().toISOString()
+        });
+        SchemaValidator._log('Region',
+          `New BP RO accepted — ${item.roRaw}`, 'OK',
+          `Zone: ${zone} | scopeKey: ${norm} | effectiveFrom: ${item.firstSeenDate} | Admin confirmed`
+        );
+      } else if (item.type === 'new_rd_region') {
+        // Add RD mapping — get selected BP scope
+        const mapSel = document.getElementById(`pendMap_${id}`);
+        const bpScopeKey = mapSel?.value || 'UNDER_ZO';
+        setup.rdMappings = setup.rdMappings || [];
+        setup.rdMappings.push({
+          rdRegion: item.rdRegion || 'NULL',
+          bpScopeKey,
+          mappedBy: 'admin',
+          confirmedBy: 'admin',
+          confirmedAt: new Date().toISOString(),
+          status: 'confirmed'
+        });
+        SchemaValidator._log('Region',
+          `New RD region accepted — ${item.rdRegion}`, 'OK',
+          `Zone: ${zone} | mapped to: ${bpScopeKey} | Admin confirmed`
+        );
+      }
+    } else {
+      // Rejected — add to derived list or rdMappings as UNDER_ZO
+      if (item.type === 'new_bp_ro') {
+        const norm = RegionRegistry.norm(item.roRaw || 'NULL');
+        setup.bpRegions = setup.bpRegions || [];
+        setup.bpRegions.push({
+          roRaw: item.roRaw || 'NULL',
+          roCode: null,
+          roName: norm,
+          scopeKey: null,
+          isReal: false,
+          derivedId: 'UNDER_ZO',
+          effectiveFrom: null,
+          status: 'authorised',
+          firstSeenDate: item.firstSeenDate,
+          firstSeenFile: item.firstSeenFile,
+          authorisedBy: 'admin',
+          authorisedAt: new Date().toISOString()
+        });
+        SchemaValidator._log('Region',
+          `New BP RO rejected — ${item.roRaw}`, 'OK',
+          `Zone: ${zone} | Permanently grouped under ${setup.derivedRegions?.[0]?.label||'UNDER ZO'}`
+        );
+      } else {
+        setup.rdMappings = setup.rdMappings || [];
+        setup.rdMappings.push({
+          rdRegion: item.rdRegion || 'NULL',
+          bpScopeKey: 'UNDER_ZO',
+          mappedBy: 'admin',
+          confirmedBy: 'admin',
+          confirmedAt: new Date().toISOString(),
+          status: 'confirmed'
+        });
+        SchemaValidator._log('Region',
+          `New RD region rejected — ${item.rdRegion}`, 'OK',
+          `Zone: ${zone} | Permanently mapped to ${setup.derivedRegions?.[0]?.label||'UNDER ZO'}`
+        );
+      }
+    }
+
+    Cfg.set('zoneSetup', zs);
+    this._renderPendingSection();
+
+    // Push to GitHub and trigger rebuild if accepted
+    const pat = await ConfigSync.getPat().catch(()=>null);
+    if (pat) await RegionRegistry.saveAndPush(zone, setup, pat);
+    if (resolution === 'accept' && item.type === 'new_bp_ro') {
+      // Rebuild from firstSeenDate
+      const affectedDates = (await DB.keys('fileIndex'))
+        .filter(d => d >= item.firstSeenDate)
+        .map(d => ({ dateStr: d, reason: 'region_change' }));
+      if (affectedDates.length > 0) {
+        AppLog.add('Region', `Rebuild triggered by region acceptance — ${item.firstSeenDate} → latest`, 'RUN',
+          `${affectedDates.length} date(s) will be rebuilt`);
+        await DataIntegrity._incrementalRebuild(zone, affectedDates).catch(()=>{});
+      }
+    }
+  },
+
+  // ── Confirm wizard ────────────────────────────────────────────
+  async confirm() {
+    const btn = document.getElementById('wizConfirmBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+
+    const zone = this.zone;
+    this._saveDraftRD(); // ensure RD draft is saved
+
+    const zs = Cfg.get('zoneSetup') || {};
+    const existing = zs[zone] || {};
+
+    const setupData = {
+      ...existing,
+      setupComplete: true,
+      fyEndDate: this._fyDate || existing.fyEndDate,
+      fyEndBPFile: this._fyBPFile || existing.fyEndBPFile,
+      fyEndRDFile: this._fyRDFile || existing.fyEndRDFile,
+      lastValidated: new Date().toISOString(),
+      lastValidatedBy: 'admin',
+      derivedRegions: [{
+        id: 'UNDER_ZO',
+        label: this.draft.derivedLabel || 'UNDER ZO',
+        isDefault: true
+      }],
+      bpRegions: this.draft.bpRegions,
+      rdMappings: this.draft.rdMappings,
+      pendingReview: (existing.pendingReview || []).filter(p => p.status === 'pending')
+    };
+
+    SchemaValidator._log('Region',
+      `Zone setup ${this.isRevalidation ? 'revalidation' : 'initial setup'} confirmed — ${zone}`,
+      'OK',
+      `${setupData.bpRegions.filter(r=>r.isReal).length} independent regions | ` +
+      `${setupData.bpRegions.filter(r=>!r.isReal).length} derived | ` +
+      `${setupData.rdMappings.length} RD mappings | ` +
+      `Derived region: "${setupData.derivedRegions[0].label}"`
+    );
+
+    const pat = await ConfigSync.getPat().catch(()=>null);
+    await RegionRegistry.saveAndPush(zone, setupData, pat);
+
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Saved!'; }
+
+    // Trigger rebuild
+    const allDates = (await DB.keys('fileIndex')).map(d => ({ dateStr: d, reason: 'initial_setup' }));
+    if (allDates.length > 0) {
+      AppLog.add('Region', `Full rebuild triggered after setup confirmation`, 'RUN',
+        `Zone: ${zone} | ${allDates.length} dates`);
+      setTimeout(async () => {
+        await DataIntegrity._incrementalRebuild(zone, allDates).catch(()=>{});
+      }, 500);
+    }
+  }
+};
+
 const AdminLogUI = {
   _calYear: new Date().getFullYear(),
   _calMonth: new Date().getMonth(), // 0-based
@@ -8433,6 +9368,54 @@ const App = {
   },
 
   // Check email settings after login — prompt if incomplete
+  _checkRegionPending() {
+    const zone = Cfg.get('activeZone');
+    if (!zone) return;
+    const setup = RegionRegistry.get(zone);
+    const isIncomplete = !RegionRegistry.isSetupComplete(zone);
+    const pending = (setup?.pendingReview || []).filter(p => p.status === 'pending');
+    if (!isIncomplete && !pending.length) return;
+
+    const overlay = document.getElementById('regionPendingOverlay');
+    const title = document.getElementById('regionOverlayTitle');
+    const msg = document.getElementById('regionOverlayMsg');
+    const list = document.getElementById('regionOverlayList');
+
+    if (isIncomplete) {
+      title.textContent = 'Zone Setup Required';
+      msg.textContent = 'Zone & Region setup is not complete. Summary generation is blocked until setup is finished. Please complete the setup wizard.';
+      list.innerHTML = '';
+    } else {
+      title.textContent = 'New Regions Detected';
+      msg.textContent = `${pending.length} new region(s) have been detected in BP/RD files and are awaiting your review. Until reviewed, they are aggregated under the derived region (UNDER ZO).`;
+      list.innerHTML = pending.map(p => {
+        const icon = p.type === 'new_bp_ro' ? '📋 BP' : '📄 RD';
+        const val = p.roRaw || p.rdRegion || '—';
+        return `<div style="margin-bottom:6px"><strong>${icon}:</strong> ${val}<br>
+          <span style="color:var(--text3)">First seen: ${p.firstSeenDate} in ${p.firstSeenFile}</span></div>`;
+      }).join('');
+    }
+
+    overlay.style.display = 'flex';
+  },
+
+  regionOverlayConfirm() {
+    document.getElementById('regionPendingOverlay').style.display = 'none';
+    Admin.showSec('zone');
+    const zone = Cfg.get('activeZone');
+    const setup = RegionRegistry.get(zone);
+    const pending = (setup?.pendingReview || []).filter(p => p.status === 'pending');
+    if (pending.length > 0) {
+      // Scroll to pending section
+      setTimeout(() => {
+        const el = document.getElementById('zonePendingSection');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      }, 300);
+    } else {
+      ZoneSetupWizard.start(zone);
+    }
+  },
+
   _checkEmailSetup() {
     const email = Cfg.get('adminEmail') || '';
     const svcId = Cfg.get('ejsServiceId') || '';
@@ -8522,8 +9505,11 @@ const App = {
     if (hash === storedHash) {
       document.getElementById('pinOverlay').classList.remove('open');
       Admin.open();
-      // After first login, check email settings completeness
-      setTimeout(() => App._checkEmailSetup(), 400);
+      // Check for pending region review or incomplete setup after login
+      setTimeout(() => {
+        App._checkEmailSetup();
+        App._checkRegionPending();
+      }, 400);
     } else {
       errEl.textContent = 'Incorrect password.';
       document.getElementById('pinInput').value = '';
