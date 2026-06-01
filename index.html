@@ -1998,19 +1998,22 @@ const ConfigSync = {
         delete cfg._ghPat; // don't store raw PAT in Cfg.d
       }
       // Restore sheet IDs to fileIndex — prevents reconversion after data clear
+      // Always restore from config.json regardless of the bpConverted flag.
+      // The config value is authoritative — it was written when conversion succeeded.
+      // Guarding on !bpConverted caused IDs to be skipped on retries after background sync ran.
       const sheetIds = cfg.fileIndexSheetIds || {};
       for (const [dk, ids] of Object.entries(sheetIds)) {
         try {
           const existing = await DB.get('fileIndex', dk) || {};
           let changed = false;
-          if (ids.bpSheetId && !existing.bpConverted) {
+          if (ids.bpSheetId) {
             existing.bpSheetId = ids.bpSheetId;
             existing.bpConverted = true;
             existing.bpStale = false;
             if (ids.bpConvertedVersion) existing.bpVersion = ids.bpConvertedVersion;
             changed = true;
           }
-          if (ids.rdSheetId && !existing.rdConverted) {
+          if (ids.rdSheetId) {
             existing.rdSheetId = ids.rdSheetId;
             existing.rdConverted = true;
             existing.rdStale = false;
@@ -2076,14 +2079,26 @@ const SheetsAPI = {
   // Uses sheets.values.get with a filter approach via batchGet
   async queryZoneData(sheetId, zone, sheetName) {
     const token = await GDrive.getToken(false).catch(() => null);
-    if (!token) return null;
+    if (!token) {
+      AppLog.add('Sheets', `queryZoneData: no token — ${sheetName}`, 'ERR', 'Cannot call Sheets API');
+      return null;
+    }
     try {
       // Fetch all data — request A:AZ to cover wide sheets
       const range = encodeURIComponent(`${sheetName}!A:AZ`);
       const url = `${this.BASE}/${sheetId}/values/${range}?majorDimension=ROWS`;
+      AppLog.add('Sheets', `queryZoneData: making request`, 'RUN',
+        `GET ${url.substring(0,100)}… | sheetName='${sheetName}' | zone='${zone||'null'}'`);
+      
       const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      AppLog.add('Sheets', `queryZoneData: response`, resp.ok ? 'OK' : 'ERR',
+        `HTTP ${resp.status} | sheetName='${sheetName}'`);
+      
       if (!resp.ok) {
-        console.warn('Sheets API error:', resp.status, await resp.text());
+        const text = await resp.text();
+        console.warn('Sheets API error:', resp.status, text);
+        AppLog.add('Sheets', `queryZoneData: HTTP error — ${sheetName}`, 'ERR',
+          `HTTP ${resp.status} | ${text.substring(0,100)}`);
         return null;
       }
       const data = await resp.json();
@@ -2197,40 +2212,69 @@ const SheetsAPI = {
 
   // Get sheet names from a spreadsheet
   async getSheetNames(sheetId, existingToken) {
+    AppLog.add('Sheets', 'getSheetNames called', 'RUN',
+      `sheetId=${sheetId ? sheetId.substring(0,20)+'…' : 'NULL'} | existingToken=${existingToken?'provided':'null'}`);
+    
     const token = existingToken || await GDrive.getToken(false).catch(() => null);
-    if (!token) return { names: [], error: 'No OAuth token' };
+    AppLog.add('Sheets', 'getSheetNames: token resolution', token ? 'OK' : 'ERR',
+      `existingToken=${existingToken?'YES':'NO'} | GDrive.getToken(false)=${token?'acquired':'null'} | Final token=${token?'valid':'NULL'}`);
+    
+    if (!token) {
+      AppLog.add('Sheets', 'getSheetNames: NO TOKEN — returning empty', 'ERR',
+        `Cannot call Sheets API without token`);
+      return { names: [], error: 'No OAuth token' };
+    }
+    
     try {
       const url = `${this.BASE}/${sheetId}?fields=sheets.properties.title`;
+      AppLog.add('Sheets', 'getSheetNames: making Sheets API request', 'RUN',
+        `GET ${url.substring(0,80)}… | Headers: Authorization: Bearer ${token.substring(0,20)}…`);
+      
       const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      AppLog.add('Sheets', 'getSheetNames: Sheets API response', resp.ok ? 'OK' : 'ERR',
+        `HTTP ${resp.status} ${resp.statusText} | Content-Type: ${resp.headers.get('content-type')||'?'}`);
+      
       if (!resp.ok) {
         const body = await resp.text().catch(() => '');
         const msg = `HTTP ${resp.status}${body ? ': ' + body.substring(0,120) : ''}`;
+        AppLog.add('Sheets', `getSheetNames failed — HTTP ${resp.status}`, 'ERR', msg);
         console.warn(`getSheetNames failed for ${sheetId}:`, msg);
-        AppLog.add('Sheets', `getSheetNames HTTP error — sheetId=${sheetId.substring(0,12)}`, 'ERR', msg);
         return { names: [], error: msg };
       }
+      
       const data = await resp.json();
       const names = (data.sheets || []).map(s => s.properties.title);
+      AppLog.add('Sheets', 'getSheetNames: extracted tab names', 'OK',
+        `sheets=[${names.slice(0,5).join(', ')}${names.length>5?'…':''}] (${names.length} total)`);
+      
       return { names, error: null };
     } catch(e) {
+      AppLog.add('Sheets', 'getSheetNames: exception', 'ERR', e.message);
       console.warn('getSheetNames error:', e);
-      AppLog.add('Sheets', `getSheetNames exception — sheetId=${sheetId.substring(0,12)}`, 'ERR', e.message);
       return { names: [], error: e.message };
     }
   },
 
   async buildBPFromSheet(sheetId, dateStr, zone, cachedSheetNames, existingToken) {
+    AppLog.add('Sheets', 'buildBPFromSheet called', 'RUN',
+      `sheetId=${sheetId ? sheetId.substring(0,20)+'…' : 'NULL'} | dateStr=${dateStr} | zone=${zone||'null'} | cachedSheetNames=${cachedSheetNames===null?'null':cachedSheetNames===undefined?'undefined':'object'} | existingToken=${existingToken?'provided':'null'}`);
+    
     let sheetNames = cachedSheetNames;
     if (!sheetNames) {
+      AppLog.add('Sheets', 'buildBPFromSheet: calling getSheetNames', 'RUN',
+        `getSheetNames(sheetId='${sheetId ? sheetId.substring(0,16)+'…' : 'null'}', existingToken=${existingToken?'provided':'null'})`);
+      
       const r = await this.getSheetNames(sheetId, existingToken);
+      AppLog.add('Sheets', 'buildBPFromSheet: getSheetNames result', r.names && r.names.length > 0 ? 'OK' : 'ERR',
+        `names=[${(r.names||[]).slice(0,5).join(', ')}${(r.names||[]).length>5?'…':''}] (${(r.names||[]).length} total) | error=${r.error||'none'}`);
+      
       sheetNames = r.names || [];
-      if (!sheetNames.length) {
-        AppLog.add('Sheets', `buildBPFromSheet: no sheet names — ${dateStr}`, 'ERR',
-          `sheetId=${sheetId ? sheetId.substring(0,20) : 'null'} | error=${r.error || 'none'}`);
-        return null;
-      }
     }
-    if (!sheetNames.length) return null;
+    if (!sheetNames.length) {
+      AppLog.add('Sheets', 'buildBPFromSheet: no sheet names — returning null', 'ERR',
+        `Cannot proceed without sheet names`);
+      return null;
+    }
     const result = { date: dateStr, sheets: {}, unit: 'lacs', fromSheets: true };
     const BP_ID_COLS = ['ZO','RO','BRANCH','__SOLID__','__BNAME__'];
     for (const sn of sheetNames) {
@@ -8326,58 +8370,110 @@ const ZoneSetupWizard = {
 
     // ── Step C: Find FY End date ──────────────────────────────
     this._prereqProgress(42, 'Looking for FY End (March 31) file...', 'Finding FY End File');
+    AppLog.add('Region', 'Zone setup Step C: Finding FY End date', 'RUN',
+      `allDates=[${allDates.slice(0,5).join(', ')}${allDates.length>5?'…':''}] (${allDates.length} total)`);
+    
     const fyDate = allDates.filter(d => d.endsWith('-03-31')).sort().pop() ||
                    allDates.sort().pop();
+    const march31Count = allDates.filter(d => d.endsWith('-03-31')).length;
+    AppLog.add('Region', 'Zone setup Step C: Selected FY date', 'INF',
+      `fyDate=${fyDate} | Found ${march31Count} March 31 dates, using: ${fyDate}`);
+    
     const entry  = await DB.get('fileIndex', fyDate);
+    AppLog.add('Region', 'Zone setup Step C: IndexedDB get fileIndex entry', 'INF',
+      `DB.get('fileIndex', '${fyDate}') → bpName=${entry?.bpName||'NULL'} | bpXlsxId=${entry?.bpXlsxId ? entry.bpXlsxId.substring(0,16)+'…' : 'NULL'} | bpSheetId=${entry?.bpSheetId ? entry.bpSheetId.substring(0,16)+'…' : 'NULL'} | bpConverted=${entry?.bpConverted||false} | bpMimeType=${entry?.bpMimeType||'?'}`);
+    
     if (!entry?.bpXlsxId && !entry?.bpSheetId) {
       this._prereqError('No FY End BP file found. Upload a BP_31.03.YYYY.xlsx file to your Drive BP folder and retry.');
       return;
     }
     this._prereqProgress(55, 'FY End file: ' + (entry.bpName || fyDate), 'Finding FY End File');
 
+
     // ── Step D: Convert if needed ─────────────────────────────
+    AppLog.add('Region', 'Zone setup Step D: Check if conversion needed', 'INF',
+      `entry.bpSheetId=${entry.bpSheetId ? entry.bpSheetId.substring(0,16)+'…' : 'NULL'} | entry.bpXlsxId=${entry.bpXlsxId ? entry.bpXlsxId.substring(0,16)+'…' : 'NULL'} | Decision: ${entry.bpSheetId ? 'SKIP conversion (sheet ID exists)' : 'RUN conversion (no sheet ID)'}`);
+    
     if (!entry.bpSheetId) {
       this._prereqProgress(60, 'Converting FY End BP file...', 'Converting FY End File');
       AppLog.add('Region', 'Zone setup: converting FY End BP file', 'RUN',
         `Date: ${fyDate} | File: ${entry.bpName}`);
       try {
         const bpFolderId    = Cfg.get('gBpFolderId');
+        AppLog.add('Region', 'Zone setup Step D: Starting conversion', 'INF',
+          `Step D.1: gBpFolderId=${bpFolderId ? bpFolderId.substring(0,16)+'…' : 'NULL'}`);
+        
         const parentFolderId = await GDrive._getParentFolderId(bpFolderId) || bpFolderId;
+        AppLog.add('Region', 'Zone setup Step D.1: Got parent folder', 'OK',
+          `_getParentFolderId('${bpFolderId ? bpFolderId.substring(0,12)+'…' : 'null'}') → parentFolderId=${parentFolderId ? parentFolderId.substring(0,16)+'…' : 'null'}`);
+        
         const cacheFolderId  = await GDrive._getCacheFolderId(token, parentFolderId, 'bp');
+        AppLog.add('Region', 'Zone setup Step D.2: Got cache folder', 'OK',
+          `_getCacheFolderId(token, '${parentFolderId ? parentFolderId.substring(0,12)+'…' : 'null'}', 'bp') → cacheFolderId=${cacheFolderId ? cacheFolderId.substring(0,16)+'…' : 'null'}`);
+        
+        AppLog.add('Region', 'Zone setup Step D.3: Starting XLSX→Sheet conversion', 'RUN',
+          `convertFile(token, bpXlsxId='${entry.bpXlsxId.substring(0,16)}…', name='${entry.bpName}', cacheFolderId='${cacheFolderId ? cacheFolderId.substring(0,12)+'…' : 'null'}')`);
+        
         const sheetId = await GDrive.convertFile(token, entry.bpXlsxId, entry.bpName, cacheFolderId);
+        AppLog.add('Region', 'Zone setup Step D.3: Conversion result', sheetId ? 'OK' : 'ERR',
+          `convertFile() → sheetId=${sheetId ? sheetId.substring(0,16)+'…' : 'NULL'}`);
+        
         if (!sheetId) throw new Error('Conversion returned no sheet ID');
         const updated = { ...entry, bpSheetId: sheetId, bpConverted: true };
         await DB.set('fileIndex', fyDate, updated);
+        AppLog.add('Region', 'Zone setup Step D.4: Saved to IndexedDB', 'OK',
+          `DB.set('fileIndex', '${fyDate}', {..., bpSheetId='${sheetId.substring(0,16)}…', bpConverted=true})`);
+        
         entry.bpSheetId = sheetId;
         AppLog.add('Region', 'Zone setup: FY End file converted', 'OK', `sheetId: ${sheetId}`);
       } catch(e) {
         if (this._prereqAborted) return;
+        AppLog.add('Region', 'Zone setup Step D: Conversion exception', 'ERR', `${e.message}`);
         this._prereqError('FY End file conversion failed: ' + e.message + ' — Check Drive permissions.');
         return;
       }
+    } else {
+      AppLog.add('Region', 'Zone setup Step D: SKIPPED (sheet ID already exists)', 'INF',
+        `entry.bpSheetId=${entry.bpSheetId.substring(0,16)+'…'}`);
     }
     if (this._prereqAborted) return; // admin cancelled during conversion
     this._prereqProgress(72, 'FY End sheet ready', 'Converting FY End File');
 
     // ── Step E: Fetch BP data — re-verify token first ─────────
     this._prereqProgress(78, 'Loading FY End BP data...', 'Loading Zone Names');
-    // Re-check token — it may have expired during the above steps
+    AppLog.add('Region', 'Zone setup Step E: Verifying token', 'RUN',
+      `GDrive.getToken(false) called to verify cached token`);
+    
     const freshToken = await GDrive.getToken(false).catch(() => null);
     if (!freshToken) {
-      // Session expired mid-flow — restart from sign-in
+      AppLog.add('Region', 'Zone setup Step E: Token verification FAILED', 'ERR',
+        `freshToken=NULL | GDrive.token=${GDrive.token ? 'set' : 'null'} | GDrive.tokenExpiry=${GDrive.tokenExpiry ? new Date(GDrive.tokenExpiry).toISOString() : 'null'}`);
       AppLog.add('Region', 'Zone setup: token expired mid-flow — requesting re-auth', 'WARN', '');
-      this._prereqCancelled = false; // allow overlay to show again
+      this._prereqCancelled = false;
       await this._ensureReady();
       return;
     }
+    AppLog.add('Region', 'Zone setup Step E: Token verified', 'OK',
+      `freshToken acquired | Expiry: ${new Date(GDrive.tokenExpiry).toISOString()}`);
 
+    AppLog.add('Region', 'Zone setup Step E: Calling buildBPFromSheet', 'RUN',
+      `buildBPFromSheet(sheetId='${entry.bpSheetId.substring(0,16)}…', dateStr='${fyDate}', zone=null, cachedSheetNames=null, token=${freshToken?'valid':'null'})`);
+    
     const sheetData = await SheetsAPI.buildBPFromSheet(
-      entry.bpSheetId, fyDate, null, {}, freshToken
-    ).catch((e) => { AppLog.add('Region','buildBPFromSheet error','ERR',e.message); return null; });
+      entry.bpSheetId, fyDate, null, null, freshToken
+    ).catch((e) => { 
+      AppLog.add('Region','buildBPFromSheet exception','ERR',e.message); 
+      return null; 
+    });
+    
+    AppLog.add('Region', 'Zone setup Step E: buildBPFromSheet result', sheetData ? 'OK' : 'ERR',
+      `sheetData=${sheetData ? 'object with '+Object.keys(sheetData.sheets||{}).length+' sheet(s)' : 'NULL'}`);
 
     if (this._prereqAborted) return; // admin cancelled during fetch
 
     if (!sheetData) {
+      AppLog.add('Region', 'Zone setup Step E: FAILED - no sheet data', 'ERR',
+        `buildBPFromSheet returned null — cannot read zone names`);
       this._prereqError('Could not read FY End BP sheet. Check your connection and retry.');
       return;
     }
