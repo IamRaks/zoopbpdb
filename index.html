@@ -6582,9 +6582,21 @@ const Admin = {
   },
   open(){
     APILog.startNewSession(); // each admin panel open = new log session
-    // Reset cancel flag — each new admin session gets a fresh start
-    ZoneSetupWizard._prereqCancelled = false;
-    ZoneSetupWizard._allBPRows = null; // clear cache so fresh load on next Zone tab open
+    
+    // Only reset zone wizard state if zone is NOT already fully configured.
+    // If zone setup is complete, preserve _allBPRows so Zone tab loads
+    // instantly without showing the sign-in overlay again.
+    const activeZone = Cfg.get('activeZone');
+    const zoneAlreadySetUp = activeZone && RegionRegistry.isSetupComplete(activeZone);
+    if (!zoneAlreadySetUp) {
+      ZoneSetupWizard._prereqCancelled = false;
+      ZoneSetupWizard._allBPRows = null;
+      AppLog.add('Admin', 'Admin panel opened - zone not set up, wizard state reset', 'INF', '');
+    } else {
+      AppLog.add('Admin', 'Admin panel opened - zone already set up, wizard state preserved', 'INF',
+        `activeZone=${activeZone} | _allBPRows=${ZoneSetupWizard._allBPRows ? ZoneSetupWizard._allBPRows.length+' rows' : 'null (will load from cache)'}`);
+    }
+    
     document.getElementById('adminOverlay').classList.add('open');
     
     // ---- CHANGE TRACKING: Snapshot config when panel opens ----
@@ -7182,8 +7194,40 @@ const Admin = {
   async loadSheetsUI(){
     const bpDates=await FM.availDates('bp');
     const rdDates=await FM.availDates('rd');
+    
     if(!bpDates.length&&!rdDates.length){
-      document.getElementById('sheetParamCfg').innerHTML='<p style="font-size:11px;color:var(--text3)">Import files first via Data Source tab.</p>';
+      // bpFiles/rdFiles are empty — check if we have a saved sheets config
+      // This happens on first Admin Panel open before background sync populates bpFiles
+      const savedSheets = Cfg.get('sheets') || {};
+      if (Object.keys(savedSheets).length > 0) {
+        // We have saved config from a previous session — use it directly
+        AppLog.add('Admin', 'loadSheetsUI: bpFiles empty but saved sheets config found', 'INF',
+          `Using Cfg.sheets with ${Object.keys(savedSheets).length} sheets (bpFiles not yet synced)`);
+        this._applySheetDefaults(savedSheets);
+        this.renderSheetParams(savedSheets);
+        // Show a soft note (not an error) that data is still syncing
+        const cfg = document.getElementById('sheetParamCfg');
+        if (cfg) {
+          const note = document.createElement('p');
+          note.id = 'sheetSyncNote';
+          note.style.cssText = 'font-size:11px;color:var(--text3);margin-top:8px';
+          note.textContent = '⏳ File data syncing in background — parameters shown from last saved config.';
+          cfg.prepend(note);
+        }
+        return;
+      }
+      // Also check fileIndex — files may exist in Drive but not yet parsed locally
+      const indexedDates = await DB.keys('fileIndex');
+      if (indexedDates.length) {
+        AppLog.add('Admin', 'loadSheetsUI: fileIndex has dates but bpFiles empty', 'WARN',
+          `fileIndex has ${indexedDates.length} dates but bpFiles not yet populated`);
+        document.getElementById('sheetParamCfg').innerHTML =
+          '<p style="font-size:11px;color:var(--text3)">⏳ Files are indexed but not yet parsed. Go to Data Source tab and click <b>Sync from Drive</b>, then return here.</p>';
+        return;
+      }
+      // Truly no data at all
+      document.getElementById('sheetParamCfg').innerHTML =
+        '<p style="font-size:11px;color:var(--text3)">Import files first via Data Source tab.</p>';
       return;
     }
     const sc=Cfg.get('sheets')||{};
@@ -8741,6 +8785,95 @@ const ZoneSetupWizard = {
     if (this._prereqCallback) this._prereqCallback();
   },
 
+  // ── Load all BP rows from IndexedDB (no Drive token needed) ─────
+  // Used when zone is already fully set up — bypasses the sign-in wizard
+  async _loadAllBPRowsFromCache(zone) {
+    this._status1('⏳ Loading zone data...');
+    AppLog.add('Region', '_loadAllBPRowsFromCache called', 'RUN',
+      `zone=${zone} | Loading bpFiles from IndexedDB`);
+    try {
+      const dates = await DB.keys('bpFiles');
+      AppLog.add('Region', '_loadAllBPRowsFromCache: dates in bpFiles', 'INF',
+        `dates=[${dates.slice(0,5).join(', ')}${dates.length>5?'…':''}] (${dates.length} total)`);
+
+      if (!dates.length) {
+        // bpFiles empty — background sync may still be running
+        AppLog.add('Region', '_loadAllBPRowsFromCache: bpFiles empty — will retry after sync', 'WARN',
+          'No parsed BP data yet. Background sync should populate this shortly.');
+        this._status1('⏳ Syncing data, please wait a moment...');
+
+        // Wait up to 10s for background sync to populate bpFiles
+        let waited = 0;
+        while (waited < 10000) {
+          await new Promise(r => setTimeout(r, 1000));
+          waited += 1000;
+          const retryDates = await DB.keys('bpFiles');
+          if (retryDates.length) {
+            AppLog.add('Region', '_loadAllBPRowsFromCache: bpFiles now populated after wait', 'OK',
+              `Waited ${waited}ms | ${retryDates.length} dates found`);
+            return await this._loadAllBPRowsFromCache(zone); // retry now
+          }
+        }
+
+        // Still empty after 10s — show inline button so admin can retry manually
+        AppLog.add('Region', '_loadAllBPRowsFromCache: timed out waiting for bpFiles', 'WARN',
+          'bpFiles still empty after 10s — showing Load Zones button');
+        this._prereqCancel();
+        return;
+      }
+
+      // Find FY End date (March 31 preferred)
+      const fyDate = dates.filter(d => d.endsWith('-03-31')).sort().pop() || dates.sort().pop();
+      AppLog.add('Region', '_loadAllBPRowsFromCache: using FY End date', 'INF',
+        `fyDate=${fyDate}`);
+
+      const fd = await DB.get('bpFiles', fyDate);
+      if (!fd) {
+        AppLog.add('Region', '_loadAllBPRowsFromCache: no bpFiles entry for fyDate', 'WARN',
+          `DB.get('bpFiles', '${fyDate}') returned null`);
+        this._prereqCancel();
+        return;
+      }
+
+      // Flatten all sheets into rows array
+      const allRows = Object.values(fd.sheets || {}).flatMap(s => s.rows || []);
+      AppLog.add('Region', '_loadAllBPRowsFromCache: rows loaded', 'OK',
+        `${allRows.length} rows from ${Object.keys(fd.sheets||{}).length} sheets`);
+
+      // Extract unique zone names
+      const zones = [...new Set(allRows.map(r => (r['ZO']||'').trim()).filter(Boolean))].sort();
+      AppLog.add('Region', '_loadAllBPRowsFromCache: zones found', 'OK',
+        `zones=[${zones.join(', ')}]`);
+
+      this._allBPRows = allRows;
+      this._fyBPFile = fd.name || fyDate;
+
+      // Populate zone dropdown
+      const sel = document.getElementById('zoneSelect');
+      if (sel) {
+        const cur = zone || Cfg.get('activeZone') || '';
+        sel.innerHTML = zones.map(z =>
+          `<option value="${z}" ${z===cur?'selected':''}>${z}</option>`
+        ).join('');
+      }
+
+      // Filter to selected zone
+      if (zone && zones.includes(zone)) {
+        this.zone = zone;
+        this._bpRows = allRows.filter(r => (r['ZO']||'').trim() === zone.trim());
+      }
+
+      this._status1(`✓ ${zones.length} zone(s) loaded from ${this._fyBPFile}`);
+      AppLog.add('Region', 'Zone data loaded from cache', 'OK',
+        `${zones.length} zones | FY End: ${this._fyBPFile} | activeZone: ${zone}`);
+
+    } catch(e) {
+      AppLog.add('Region', '_loadAllBPRowsFromCache: exception', 'ERR', e.message);
+      this._status1('⚠ Failed to load zone data. Click Load Zones to retry.');
+      this._prereqCancel();
+    }
+  },
+
   // ── _ensureReady ─────────────────────────────────────────────
   // Full prerequisite check: token → fileIndex → FY End converted → zones
   // Runs automatically when Zone tab opens. Only shows overlay if admin
@@ -8752,10 +8885,19 @@ const ZoneSetupWizard = {
     
     this._status1('');
 
-    // If already loaded successfully this session, skip
+    // Guard 1: already loaded this session
     if (this._allBPRows && this._allBPRows.length) {
       AppLog.add('Region', 'Zone setup: _ensureReady SKIPPED (already loaded)', 'INF',
         `Using cached _allBPRows with ${this._allBPRows.length} rows`);
+      return;
+    }
+
+    // Guard 2: zone is already fully set up — load from IndexedDB, no Drive sign-in needed
+    const activeZone = Cfg.get('activeZone');
+    if (activeZone && RegionRegistry.isSetupComplete(activeZone)) {
+      AppLog.add('Region', 'Zone setup: zone already configured — loading from cache', 'INF',
+        `activeZone=${activeZone} | setupComplete=true | Skipping Drive sign-in`);
+      await this._loadAllBPRowsFromCache(activeZone);
       return;
     }
 
@@ -10202,6 +10344,17 @@ const App = {
           await Dashboard.init();
           App.hideLanding();
         }
+      }
+      
+      // If admin panel is open on Sheets & Params tab, refresh it now
+      // that bpFiles/rdFiles are populated (fixes first-open empty state)
+      const adminOpen = document.getElementById('adminOverlay')?.classList.contains('open');
+      const sheetsTabActive = document.querySelector('.anav-item.active[data-sec="sheets"]');
+      if (adminOpen && sheetsTabActive) {
+        AppLog.add('App', 'Background sync complete — refreshing Sheets & Params tab', 'INF', '');
+        const syncNote = document.getElementById('sheetSyncNote');
+        if (syncNote) syncNote.remove(); // remove the "syncing" note
+        Admin.loadSheetsUI().catch(() => {});
       }
     } catch(e) {
       AppLog.add('App', 'Background sync error', 'ERR', e.message);
