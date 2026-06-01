@@ -847,6 +847,31 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
   </div>
 </div>
 
+
+<!-- UNSAVED CHANGES OVERLAY -->
+<div id="unsavedChangesOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9700;align-items:center;justify-content:center;overflow:auto;padding:20px">
+  <div style="background:var(--nav2);border:1px solid var(--border);border-radius:16px;padding:32px 26px;max-width:600px;width:100%;text-align:left">
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px">
+      <span style="font-size:28px">⚠</span>
+      <div style="flex:1">
+        <h3 style="margin:0;color:var(--text)">Unsaved Changes</h3>
+        <div style="font-size:11px;color:var(--text2);margin-top:4px" id="changeIndicator"></div>
+      </div>
+    </div>
+    
+    <!-- Sections with changes -->
+    <div id="changesContainer" style="max-height:calc(100vh - 300px);overflow-y:auto;margin-bottom:20px"></div>
+    
+    <!-- Bottom action buttons -->
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <button class="btn-s" style="font-size:12px;order:2" onclick="Admin._cancelUnsavedOverlay()">← Back to Editing</button>
+      <button class="btn-s" style="font-size:12px;order:1;background:var(--red);color:#fff;border-color:var(--red);cursor:pointer" onclick="Admin._discardAllChanges()">⊘ Discard All</button>
+      <button class="btn-p" style="flex:1;font-size:13px;font-weight:700;order:0" onclick="Admin._saveAllChanges()">💾 SAVE ALL</button>
+    </div>
+  </div>
+</div>
+
 <!-- ADMIN -->
 <div id="adminOverlay">
   <div id="adminPanel">
@@ -6383,6 +6408,11 @@ const DataIntegrity = {
 // ADMIN
 // ================================================================
 const Admin = {
+  // ---- CHANGE TRACKING ----
+  _originalConfig: null,          // Snapshot of Cfg.d when panel opens
+  _unsavedChanges: {},            // Map of changes by tab section
+  _trackingEnabled: false,        // Toggle tracking on/off during panel lifecycle
+  
   // ---- DEFAULTS (hardcoded baseline) ----
   DEFAULTS: {
     holidaySats: [2,4],
@@ -6550,9 +6580,32 @@ const Admin = {
     ZoneSetupWizard._prereqCancelled = false;
     ZoneSetupWizard._allBPRows = null; // clear cache so fresh load on next Zone tab open
     document.getElementById('adminOverlay').classList.add('open');
+    
+    // ---- CHANGE TRACKING: Snapshot config when panel opens ----
+    this._originalConfig = JSON.parse(JSON.stringify(Cfg.d));
+    this._unsavedChanges = {};
+    this._trackingEnabled = true;
+    AppLog.add('Admin', 'Admin panel opened - change tracking enabled', 'INF', '');
+    
     this.loadUI();
   },
   close() {
+    // ---- CHANGE TRACKING: Check for unsaved changes before closing ----
+    this._trackingEnabled = false;
+    const changes = this._detectAllChanges();
+    
+    if (Object.keys(changes).length > 0) {
+      AppLog.add('Admin', 'Admin panel close - unsaved changes detected', 'WARN',
+        `${Object.keys(changes).length} tabs have unsaved changes`);
+      this._showUnsavedChangesOverlay(changes);
+      return; // Don't close yet - let user decide
+    }
+    
+    AppLog.add('Admin', 'Admin panel closed - no unsaved changes', 'OK', '');
+    this._closePanel();
+  },
+  
+  _closePanel() {
     document.getElementById('adminOverlay').classList.remove('open');
     // Push admin log to Drive in background
     APILog.pushToDrive().catch(() => {});
@@ -6572,6 +6625,333 @@ const Admin = {
       Dashboard.fullRefresh().catch(() => {});
     }
   },
+  // ---- CHANGE TRACKING METHODS ----
+  
+  _trackChange(tabSection, description) {
+    if (!this._trackingEnabled) return;
+    if (!this._unsavedChanges[tabSection]) {
+      this._unsavedChanges[tabSection] = [];
+    }
+    this._unsavedChanges[tabSection].push(description);
+  },
+  
+  _detectAllChanges() {
+    const changes = {};
+    const tabs = ['datasource', 'zone', 'periods', 'holidays', 'sheets', 'upload', 'security', 'derived', 'paramorder', 'adminlog'];
+    
+    tabs.forEach(tab => {
+      const tabChanges = this._detectTabChanges(tab);
+      if (tabChanges && tabChanges.length > 0) {
+        changes[tab] = tabChanges;
+      }
+    });
+    
+    return changes;
+  },
+  
+  _detectTabChanges(tabSection) {
+    if (!this._originalConfig) return [];
+    
+    const changes = [];
+    const original = this._originalConfig;
+    const current = Cfg.d;
+    
+    switch(tabSection) {
+      case 'datasource':
+        if (JSON.stringify(original.gBpFolderId) !== JSON.stringify(current.gBpFolderId))
+          changes.push({ field: 'BP Folder ID', desc: 'BP Folder ID changed' });
+        if (JSON.stringify(original.gRdFolderId) !== JSON.stringify(current.gRdFolderId))
+          changes.push({ field: 'RD Folder ID', desc: 'RD Folder ID changed' });
+        if (JSON.stringify(original.gClientId) !== JSON.stringify(current.gClientId))
+          changes.push({ field: 'Google Client ID', desc: 'Google Client ID changed' });
+        if (JSON.stringify(original.gApiKey) !== JSON.stringify(current.gApiKey))
+          changes.push({ field: 'Google API Key', desc: 'Google API Key changed' });
+        if (JSON.stringify(original.ghUsername) !== JSON.stringify(current.ghUsername))
+          changes.push({ field: 'GitHub Username', desc: 'GitHub Username changed' });
+        if (JSON.stringify(original.ghRepo) !== JSON.stringify(current.ghRepo))
+          changes.push({ field: 'GitHub Repo', desc: 'GitHub Repo changed' });
+        break;
+        
+      case 'zone':
+        if (JSON.stringify(original.zoneSetup) !== JSON.stringify(current.zoneSetup))
+          changes.push({ field: 'Zone Setup', desc: 'Zone configuration changed' });
+        if (JSON.stringify(original.activeZone) !== JSON.stringify(current.activeZone))
+          changes.push({ field: 'Active Zone', desc: 'Active Zone changed' });
+        break;
+        
+      case 'periods':
+        if (JSON.stringify(original.periods) !== JSON.stringify(current.periods))
+          changes.push({ field: 'Periods', desc: 'Time periods configuration changed' });
+        if (JSON.stringify(original.columnOrder) !== JSON.stringify(current.columnOrder))
+          changes.push({ field: 'Column Order', desc: 'Column order changed' });
+        break;
+        
+      case 'holidays':
+        if (JSON.stringify(original.holidaySats) !== JSON.stringify(current.holidaySats))
+          changes.push({ field: 'Holiday Saturdays', desc: 'Holiday Saturday selections changed' });
+        break;
+        
+      case 'sheets':
+        if (JSON.stringify(original.sheets) !== JSON.stringify(current.sheets)) {
+          const sheetChanges = this._detectSheetChanges(original.sheets || {}, current.sheets || {});
+          changes.push(...sheetChanges);
+        }
+        break;
+        
+      case 'upload':
+        if (JSON.stringify(original.fallbackToPrevDay) !== JSON.stringify(current.fallbackToPrevDay))
+          changes.push({ field: 'Fallback Setting', desc: 'Fallback to previous day setting changed' });
+        break;
+        
+      case 'security':
+        if (JSON.stringify(original.adminEmail) !== JSON.stringify(current.adminEmail))
+          changes.push({ field: 'Admin Email', desc: 'Admin email changed' });
+        if (JSON.stringify(original.ejsServiceId) !== JSON.stringify(current.ejsServiceId))
+          changes.push({ field: 'Email Service', desc: 'Email service configuration changed' });
+        break;
+        
+      case 'derived':
+        if (JSON.stringify(original.derivedParams) !== JSON.stringify(current.derivedParams))
+          changes.push({ field: 'Derived Parameters', desc: 'Derived parameters configuration changed' });
+        break;
+        
+      case 'paramorder':
+        if (JSON.stringify(original.paramOrder) !== JSON.stringify(current.paramOrder))
+          changes.push({ field: 'Parameter Order', desc: 'Parameter order changed' });
+        break;
+    }
+    
+    return changes;
+  },
+  
+  _detectSheetChanges(originalSheets, currentSheets) {
+    const changes = [];
+    const allSheetNames = new Set([...Object.keys(originalSheets), ...Object.keys(currentSheets)]);
+    
+    allSheetNames.forEach(sheetName => {
+      const orig = originalSheets[sheetName];
+      const curr = currentSheets[sheetName];
+      
+      if (!orig && curr) {
+        changes.push({ field: sheetName, desc: `${sheetName}: added` });
+      } else if (orig && !curr) {
+        changes.push({ field: sheetName, desc: `${sheetName}: removed` });
+      } else if (orig && curr) {
+        // Check if enabled flag changed
+        if (orig.enabled !== curr.enabled) {
+          changes.push({ field: sheetName, desc: `${sheetName}: ${curr.enabled ? 'enabled' : 'disabled'}` });
+        }
+        // Check columns
+        const origCols = orig.columns || {};
+        const currCols = curr.columns || {};
+        const allCols = new Set([...Object.keys(origCols), ...Object.keys(currCols)]);
+        
+        allCols.forEach(col => {
+          const origCol = origCols[col];
+          const currCol = currCols[col];
+          if (origCol && currCol) {
+            if (origCol.enabled !== currCol.enabled) {
+              changes.push({ 
+                field: `${sheetName}::${col}`, 
+                desc: `${sheetName} → ${col}: ${currCol.enabled ? 'checked' : 'unchecked'}` 
+              });
+            }
+            if (origCol.displayName !== currCol.displayName) {
+              changes.push({ 
+                field: `${sheetName}::${col}`, 
+                desc: `${sheetName} → ${col}: display name changed` 
+              });
+            }
+            if (origCol.direction !== currCol.direction) {
+              changes.push({ 
+                field: `${sheetName}::${col}`, 
+                desc: `${sheetName} → ${col}: direction changed` 
+              });
+            }
+          }
+        });
+      }
+    });
+    
+    return changes;
+  },
+  
+  // ---- UNSAVED CHANGES OVERLAY ----
+  
+  _showUnsavedChangesOverlay(changes) {
+    const tabs = [
+      { id: 'datasource', name: '📁 Data Source', icon: '📁' },
+      { id: 'zone', name: '🏛 Zone', icon: '🏛' },
+      { id: 'periods', name: '📅 Time Periods', icon: '📅' },
+      { id: 'holidays', name: '📆 Holidays', icon: '📆' },
+      { id: 'sheets', name: '📋 Sheets & Parameters', icon: '📋' },
+      { id: 'upload', name: '☁ Upload & Summary', icon: '☁' },
+      { id: 'security', name: '🔒 Security', icon: '🔒' },
+      { id: 'derived', name: '🔢 Derived Params', icon: '🔢' },
+      { id: 'paramorder', name: '↕ Param Order', icon: '↕' },
+      { id: 'adminlog', name: '🔍 Admin Log', icon: '🔍' }
+    ];
+    
+    const tabsWithChanges = tabs.filter(t => changes[t.id]);
+    const indicator = document.getElementById('changeIndicator');
+    indicator.textContent = `${tabsWithChanges.length} of ${tabs.length} tabs have unsaved changes`;
+    
+    let html = '';
+    
+    tabsWithChanges.forEach(tab => {
+      const tabChanges = changes[tab.id];
+      html += `<div style="margin-bottom:20px;padding:16px;background:var(--bg3);border-radius:8px;border-left:3px solid var(--blue)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <span style="font-size:16px">${tab.icon}</span>
+          <span style="font-weight:600;color:var(--text);flex:1">${tab.name}</span>
+          <span style="font-size:11px;background:var(--blue);color:#fff;padding:2px 8px;border-radius:4px;font-weight:600">${tabChanges.length}</span>
+        </div>
+        <div style="margin-left:24px">`;
+      
+      tabChanges.forEach(change => {
+        html += `<div style="font-size:12px;color:var(--text2);margin-bottom:8px;display:flex;gap:8px">
+          <span style="color:var(--text3)">•</span>
+          <span>${change.desc}</span>
+        </div>`;
+      });
+      
+      html += `</div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn-s" style="flex:1;font-size:11px" onclick="Admin._saveTabChanges('${tab.id}')">💾 Save</button>
+          <button class="btn-s" style="flex:1;font-size:11px;background:var(--bg2);color:var(--text3);border-color:var(--border)" onclick="Admin._ignoreTabChanges('${tab.id}')">⊘ Ignore</button>
+        </div>
+      </div>`;
+    });
+    
+    // Add unchanged tabs (collapsed/grayed)
+    const tabsWithoutChanges = tabs.filter(t => !changes[t.id]);
+    if (tabsWithoutChanges.length > 0) {
+      html += `<div style="margin-bottom:20px">
+        <div style="font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">No changes in:</div>`;
+      
+      tabsWithoutChanges.forEach(tab => {
+        html += `<div style="font-size:12px;color:var(--text3);margin-bottom:6px;display:flex;gap:8px;align-items:center">
+          <span style="opacity:.5">⚪</span>
+          <span>${tab.name}</span>
+        </div>`;
+      });
+      
+      html += `</div>`;
+    }
+    
+    document.getElementById('changesContainer').innerHTML = html;
+    document.getElementById('unsavedChangesOverlay').style.display = 'flex';
+    AppLog.add('Admin', 'Unsaved changes overlay displayed', 'INF',
+      `${tabsWithChanges.length} of ${tabs.length} tabs have changes`);
+  },
+  
+  async _saveTabChanges(tabId) {
+    AppLog.add('Admin', `Save tab changes - ${tabId}`, 'RUN', 'Saving single tab to GitHub');
+    try {
+      await Cfg.save();
+      await ConfigSync.push(true);
+      AppLog.add('Admin', `Tab saved - ${tabId}`, 'OK', 'Changes saved to GitHub');
+      
+      // Update original config so this tab is no longer marked as changed
+      this._originalConfig = JSON.parse(JSON.stringify(Cfg.d));
+      
+      // Refresh overlay
+      const changes = this._detectAllChanges();
+      if (Object.keys(changes).length > 0) {
+        this._showUnsavedChangesOverlay(changes);
+      } else {
+        // No more changes, close overlay and panel
+        document.getElementById('unsavedChangesOverlay').style.display = 'none';
+        AppLog.add('Admin', 'All changes saved', 'OK', 'No more unsaved changes - closing panel');
+        setTimeout(() => this._closePanel(), 500);
+      }
+    } catch(e) {
+      AppLog.add('Admin', `Tab save failed - ${tabId}`, 'ERR', e.message);
+      alert('Failed to save: ' + e.message);
+    }
+  },
+  
+  async _ignoreTabChanges(tabId) {
+    AppLog.add('Admin', `Ignore tab changes - ${tabId}`, 'INF', 'Reverting this tab');
+    
+    // Revert this tab's section to original
+    if (tabId === 'datasource') {
+      Cfg.d.gBpFolderId = this._originalConfig.gBpFolderId;
+      Cfg.d.gRdFolderId = this._originalConfig.gRdFolderId;
+      Cfg.d.gClientId = this._originalConfig.gClientId;
+      Cfg.d.gApiKey = this._originalConfig.gApiKey;
+      Cfg.d.ghUsername = this._originalConfig.ghUsername;
+      Cfg.d.ghRepo = this._originalConfig.ghRepo;
+    } else if (tabId === 'zone') {
+      Cfg.d.zoneSetup = JSON.parse(JSON.stringify(this._originalConfig.zoneSetup || {}));
+      Cfg.d.activeZone = this._originalConfig.activeZone;
+    } else if (tabId === 'periods') {
+      Cfg.d.periods = JSON.parse(JSON.stringify(this._originalConfig.periods || {}));
+      Cfg.d.columnOrder = JSON.parse(JSON.stringify(this._originalConfig.columnOrder || []));
+    } else if (tabId === 'holidays') {
+      Cfg.d.holidaySats = JSON.parse(JSON.stringify(this._originalConfig.holidaySats || []));
+    } else if (tabId === 'sheets') {
+      Cfg.d.sheets = JSON.parse(JSON.stringify(this._originalConfig.sheets || {}));
+    } else if (tabId === 'upload') {
+      Cfg.d.fallbackToPrevDay = this._originalConfig.fallbackToPrevDay;
+    } else if (tabId === 'security') {
+      Cfg.d.adminEmail = this._originalConfig.adminEmail;
+      Cfg.d.ejsServiceId = this._originalConfig.ejsServiceId;
+      Cfg.d.ejsTemplateId = this._originalConfig.ejsTemplateId;
+      Cfg.d.ejsPublicKey = this._originalConfig.ejsPublicKey;
+    } else if (tabId === 'derived') {
+      Cfg.d.derivedParams = JSON.parse(JSON.stringify(this._originalConfig.derivedParams || []));
+    } else if (tabId === 'paramorder') {
+      Cfg.d.paramOrder = JSON.parse(JSON.stringify(this._originalConfig.paramOrder || []));
+    }
+    
+    // Refresh overlay
+    const changes = this._detectAllChanges();
+    if (Object.keys(changes).length > 0) {
+      this._showUnsavedChangesOverlay(changes);
+    } else {
+      // No more changes, close overlay and panel
+      document.getElementById('unsavedChangesOverlay').style.display = 'none';
+      AppLog.add('Admin', 'All changes reverted', 'OK', 'No more unsaved changes - closing panel');
+      setTimeout(() => this._closePanel(), 500);
+    }
+  },
+  
+  async _saveAllChanges() {
+    AppLog.add('Admin', 'Save all changes', 'RUN', 'Saving all unsaved tabs to GitHub');
+    try {
+      await Cfg.save();
+      await ConfigSync.push(true);
+      AppLog.add('Admin', 'All changes saved', 'OK', 'All changes saved to GitHub');
+      document.getElementById('unsavedChangesOverlay').style.display = 'none';
+      setTimeout(() => this._closePanel(), 500);
+    } catch(e) {
+      AppLog.add('Admin', 'Save all failed', 'ERR', e.message);
+      alert('Failed to save: ' + e.message);
+    }
+  },
+  
+  async _discardAllChanges() {
+    if (!confirm('Are you sure? This will discard ALL unsaved changes across all tabs.')) {
+      return;
+    }
+    AppLog.add('Admin', 'Discard all changes', 'RUN', 'Reverting all unsaved changes');
+    
+    // Revert entire config to original
+    Object.keys(Cfg.d).forEach(key => {
+      Cfg.d[key] = JSON.parse(JSON.stringify(this._originalConfig[key]));
+    });
+    
+    AppLog.add('Admin', 'All changes discarded', 'OK', 'Config reverted to last saved state');
+    document.getElementById('unsavedChangesOverlay').style.display = 'none';
+    setTimeout(() => this._closePanel(), 500);
+  },
+  
+  _cancelUnsavedOverlay() {
+    AppLog.add('Admin', 'Return to editing', 'INF', 'Admin cancelled unsaved changes overlay');
+    document.getElementById('unsavedChangesOverlay').style.display = 'none';
+  },
+  
   loadUI(){this.loadDSUI();this.loadZoneUI();this.loadPeriodsUI();this.loadHolidaysUI();this.loadSheetsUI();this.loadDerivedUI();this.loadParamOrderUI();this.loadSecurityUI();},
 
   async loadDSUI(){
