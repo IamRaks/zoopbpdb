@@ -8451,7 +8451,30 @@ const ZoneSetupWizard = {
     AppLog.add('Region', 'Zone setup Step D: Check if conversion needed', 'INF',
       `entry.bpSheetId=${entry.bpSheetId ? entry.bpSheetId.substring(0,16)+'…' : 'NULL'} | entry.bpXlsxId=${entry.bpXlsxId ? entry.bpXlsxId.substring(0,16)+'…' : 'NULL'} | Decision: ${entry.bpSheetId ? 'SKIP conversion (sheet ID exists)' : 'RUN conversion (no sheet ID)'}`);
     
-    if (!entry.bpSheetId) {
+    // Check if the existing sheetId is still valid (hasn't been deleted from Drive)
+    let needsConversion = !entry.bpSheetId;
+    if (entry.bpSheetId && !needsConversion) {
+      AppLog.add('Region', 'Zone setup Step D: Validating existing sheet', 'RUN',
+        `Checking if sheetId=${entry.bpSheetId.substring(0,16)+'…'} still exists in Drive`);
+      
+      try {
+        const testSheetNames = await SheetsAPI.getSheetNames(entry.bpSheetId, token);
+        if (!testSheetNames.names || testSheetNames.names.length === 0) {
+          AppLog.add('Region', 'Zone setup Step D: Sheet is stale (empty or deleted)', 'WARN',
+            `getSheetNames returned no tabs | error=${testSheetNames.error || 'no names returned'} | Will reconvert`);
+          needsConversion = true;
+        } else {
+          AppLog.add('Region', 'Zone setup Step D: Sheet validation OK', 'OK',
+            `Sheet has ${testSheetNames.names.length} tabs, no conversion needed`);
+        }
+      } catch(e) {
+        AppLog.add('Region', 'Zone setup Step D: Sheet validation error', 'WARN',
+          `Error checking sheet: ${e.message} | Will attempt reconversion`);
+        needsConversion = true;
+      }
+    }
+    
+    if (needsConversion) {
       this._prereqProgress(60, 'Converting FY End BP file...', 'Converting FY End File');
       AppLog.add('Region', 'Zone setup: converting FY End BP file', 'RUN',
         `Date: ${fyDate} | File: ${entry.bpName}`);
@@ -8481,6 +8504,20 @@ const ZoneSetupWizard = {
         AppLog.add('Region', 'Zone setup Step D.4: Saved to IndexedDB', 'OK',
           `DB.set('fileIndex', '${fyDate}', {..., bpSheetId='${sheetId.substring(0,16)}…', bpConverted=true})`);
         
+        // Also update config.json on GitHub so next session uses the new sheetId
+        try {
+          const ids = Cfg.get('fileIndexSheetIds') || {};
+          ids[fyDate] = ids[fyDate] || {};
+          ids[fyDate].bpSheetId = sheetId;
+          ids[fyDate].bpConvertedVersion = entry.bpVersion || new Date().toISOString();
+          Cfg.set('fileIndexSheetIds', ids);
+          AppLog.add('Region', 'Zone setup Step D.5: Updated config.json', 'OK',
+            `Saved new sheetId to fileIndexSheetIds for next session`);
+        } catch(e) {
+          AppLog.add('Region', 'Zone setup Step D.5: Config update failed', 'WARN',
+            `Could not update config.json: ${e.message} | Will retry on next sync`);
+        }
+        
         entry.bpSheetId = sheetId;
         AppLog.add('Region', 'Zone setup: FY End file converted', 'OK', `sheetId: ${sheetId}`);
       } catch(e) {
@@ -8490,7 +8527,7 @@ const ZoneSetupWizard = {
         return;
       }
     } else {
-      AppLog.add('Region', 'Zone setup Step D: SKIPPED (sheet ID already exists)', 'INF',
+      AppLog.add('Region', 'Zone setup Step D: SKIPPED (sheet ID already exists and is valid)', 'INF',
         `entry.bpSheetId=${entry.bpSheetId.substring(0,16)+'…'}`);
     }
     if (this._prereqAborted) return; // admin cancelled during conversion
