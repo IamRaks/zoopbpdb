@@ -6812,8 +6812,16 @@ const Admin = {
       const tabChanges = tabData.changes;
       const currentAction = tabData.action;
       
+      const isSave = currentAction === 'save';
+      const isIgnore = currentAction === 'ignore';
+      const saveBg    = isSave   ? 'var(--blue)' : 'transparent';
+      const saveColor = isSave   ? '#fff'         : 'var(--text2)';
+      const savHover  = isSave   ? 'var(--blue)'  : 'var(--bg3)';
+      const ignBg     = isIgnore ? 'var(--red)'   : 'transparent';
+      const ignColor  = isIgnore ? '#fff'          : 'var(--text2)';
+      const ignHover  = isIgnore ? 'var(--red)'   : 'var(--bg3)';
+      
       html += `<div style="margin-bottom:20px;padding:16px;background:var(--bg3);border-radius:8px;border-left:3px solid var(--blue)">
-        <!-- Tab header and changes list -->
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
           <span style="font-size:16px">${tab.icon}</span>
           <span style="font-weight:600;color:var(--text);flex:1">${tab.name}</span>
@@ -6829,23 +6837,19 @@ const Admin = {
       });
       
       html += `</div>
-        
-        <!-- Toggle pill: [Save] [Ignore] -->
         <div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:11px;color:var(--text2);font-weight:600">Action:</span>
           <div style="display:flex;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:2px;gap:2px">
-            <!-- Save option -->
-            <button onclick="Admin._toggleTabAction('${tab.id}', 'save')" 
-              style="padding:6px 14px;border:none;background:${currentAction === 'save' ? 'var(--blue)' : 'transparent'};color:${currentAction === 'save' ? '#fff' : 'var(--text2)'};border-radius:18px;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s;text-align:center"
-              onmouseover="this.style.background='${currentAction === 'save' ? 'var(--blue)' : 'var(--bg3)}';"
-              onmouseout="this.style.background='${currentAction === 'save' ? 'var(--blue)' : 'transparent'}';">
+            <button onclick="Admin._toggleTabAction('${tab.id}', 'save')"
+              style="padding:6px 14px;border:none;background:${saveBg};color:${saveColor};border-radius:18px;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s"
+              onmouseover="this.style.background='${savHover}'"
+              onmouseout="this.style.background='${saveBg}'">
               💾 Save
             </button>
-            <!-- Ignore option -->
-            <button onclick="Admin._toggleTabAction('${tab.id}', 'ignore')" 
-              style="padding:6px 14px;border:none;background:${currentAction === 'ignore' ? 'var(--red)' : 'transparent'};color:${currentAction === 'ignore' ? '#fff' : 'var(--text2)'};border-radius:18px;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s;text-align:center"
-              onmouseover="this.style.background='${currentAction === 'ignore' ? 'var(--red)' : 'var(--bg3)}';"
-              onmouseout="this.style.background='${currentAction === 'ignore' ? 'var(--red)' : 'transparent'}';">
+            <button onclick="Admin._toggleTabAction('${tab.id}', 'ignore')"
+              style="padding:6px 14px;border:none;background:${ignBg};color:${ignColor};border-radius:18px;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s"
+              onmouseover="this.style.background='${ignHover}'"
+              onmouseout="this.style.background='${ignBg}'">
               ⊘ Ignore
             </button>
           </div>
