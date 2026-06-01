@@ -2010,7 +2010,10 @@ const ConfigSync = {
 
   async autoLoad() {
     try {
-      const resp = await fetch(this.CONFIG_URL + '?t=' + Date.now());
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const resp = await fetch(this.CONFIG_URL + '?t=' + Date.now(), { signal: controller.signal });
+      clearTimeout(timeout);
       if (!resp.ok) return false;
       const cfg = await resp.json();
       // Deobfuscate sensitive fields
@@ -8389,17 +8392,20 @@ const Carousel = {
     const carousel = document.getElementById('carousel');
     if (!carousel) return;
 
-    // Fetch image list from GitHub
+    // Fetch image list from GitHub — with 5s timeout to prevent hanging on mobile
     let images = [];
     try {
-      const resp = await fetch(this.IMG_API);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const resp = await fetch(this.IMG_API, { signal: controller.signal });
+      clearTimeout(timeout);
       if (resp.ok) {
         const files = await resp.json();
         images = files
           .filter(f => /\.(jpe?g|png|webp|gif)$/i.test(f.name) || f.name === 'eclgcwebp')
           .map(f => ({ name: f.name, url: f.download_url }));
       }
-    } catch(e) { console.warn('Carousel: could not load images', e); }
+    } catch(e) { console.warn('Carousel: could not load images', e.name === 'AbortError' ? '(timeout)' : e); }
 
     // Always add a branded fallback slide
     const zone = (Cfg.get('activeZone') || 'ERNAKULAM') + ' ZONE';
@@ -10032,7 +10038,10 @@ const App = {
           try {
             AppLog.add('Summary', 'Trying URL', 'RUN', url.replace(apiKey, 'AIza...'));
             // Unauthenticated public request — API key as URL param only, no Authorization header
-            const r = await fetch(url);
+            const fetchCtrl = new AbortController();
+            const fetchTimeout = setTimeout(() => fetchCtrl.abort(), 10000);
+            const r = await fetch(url, { signal: fetchCtrl.signal });
+            clearTimeout(fetchTimeout);
             AppLog.add('Summary', 'HTTP response', r.ok ? 'OK' : 'WARN',
               'Status: ' + r.status + (r.ok ? '' : apiKey ? ' — check API key / file sharing' : ' — no API key configured'));
             if (!r.ok) continue;
