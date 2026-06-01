@@ -834,7 +834,10 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <div style="font-size:11px;color:var(--text2);margin-top:8px;min-height:16px" id="prereqProgLbl"></div>
     </div>
     <!-- Action button (shown for user-required steps only) -->
-    <button class="btn-p" style="width:100%;font-size:13px;margin-bottom:8px" id="prereqActionBtn" onclick="ZoneSetupWizard._prereqAction()">Sign In</button>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <button class="btn-p" style="flex:2;font-size:13px" id="prereqActionBtn" onclick="ZoneSetupWizard._prereqAction()">Sign In</button>
+      <button class="btn-s" style="flex:1;font-size:13px" id="prereqCancelSignInBtn" onclick="ZoneSetupWizard._cancelSignIn()">Cancel</button>
+    </div>
     <!-- Error state -->
     <div id="prereqError" style="display:none;margin-top:4px;margin-bottom:10px;padding:10px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;font-size:11px;color:var(--red);text-align:left"></div>
     <!-- Retry + Cancel row -->
@@ -866,7 +869,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <!-- Bottom action buttons -->
     <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
       <button class="btn-s" style="font-size:12px;order:2" onclick="Admin._cancelUnsavedOverlay()">← Back to Editing</button>
-      <button class="btn-s" style="font-size:12px;order:1;background:var(--red);color:#fff;border-color:var(--red);cursor:pointer" onclick="Admin._discardAllChanges()">⊘ Discard All</button>
+      <button class="btn-s" style="font-size:12px;order:1" onclick="Admin._confirmUnsavedChanges()">Confirm</button>
       <button class="btn-p" style="flex:1;font-size:13px;font-weight:700;order:0" onclick="Admin._saveAllChanges()">💾 SAVE ALL</button>
     </div>
   </div>
@@ -6642,7 +6645,10 @@ const Admin = {
     tabs.forEach(tab => {
       const tabChanges = this._detectTabChanges(tab);
       if (tabChanges && tabChanges.length > 0) {
-        changes[tab] = tabChanges;
+        changes[tab] = {
+          changes: tabChanges,
+          action: 'ignore'  // Default to ignore (conservative)
+        };
       }
     });
     
@@ -6799,14 +6805,18 @@ const Admin = {
     let html = '';
     
     tabsWithChanges.forEach(tab => {
-      const tabChanges = changes[tab.id];
+      const tabData = changes[tab.id];
+      const tabChanges = tabData.changes;
+      const currentAction = tabData.action;
+      
       html += `<div style="margin-bottom:20px;padding:16px;background:var(--bg3);border-radius:8px;border-left:3px solid var(--blue)">
+        <!-- Tab header and changes list -->
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
           <span style="font-size:16px">${tab.icon}</span>
           <span style="font-weight:600;color:var(--text);flex:1">${tab.name}</span>
           <span style="font-size:11px;background:var(--blue);color:#fff;padding:2px 8px;border-radius:4px;font-weight:600">${tabChanges.length}</span>
         </div>
-        <div style="margin-left:24px">`;
+        <div style="margin-left:24px;margin-bottom:12px">`;
       
       tabChanges.forEach(change => {
         html += `<div style="font-size:12px;color:var(--text2);margin-bottom:8px;display:flex;gap:8px">
@@ -6816,9 +6826,26 @@ const Admin = {
       });
       
       html += `</div>
-        <div style="display:flex;gap:8px;margin-top:12px">
-          <button class="btn-s" style="flex:1;font-size:11px" onclick="Admin._saveTabChanges('${tab.id}')">💾 Save</button>
-          <button class="btn-s" style="flex:1;font-size:11px;background:var(--bg2);color:var(--text3);border-color:var(--border)" onclick="Admin._ignoreTabChanges('${tab.id}')">⊘ Ignore</button>
+        
+        <!-- Toggle pill: [Save] [Ignore] -->
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--text2);font-weight:600">Action:</span>
+          <div style="display:flex;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:2px;gap:2px">
+            <!-- Save option -->
+            <button onclick="Admin._toggleTabAction('${tab.id}', 'save')" 
+              style="padding:6px 14px;border:none;background:${currentAction === 'save' ? 'var(--blue)' : 'transparent'};color:${currentAction === 'save' ? '#fff' : 'var(--text2)'};border-radius:18px;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s;text-align:center"
+              onmouseover="this.style.background='${currentAction === 'save' ? 'var(--blue)' : 'var(--bg3)}';"
+              onmouseout="this.style.background='${currentAction === 'save' ? 'var(--blue)' : 'transparent'}';">
+              💾 Save
+            </button>
+            <!-- Ignore option -->
+            <button onclick="Admin._toggleTabAction('${tab.id}', 'ignore')" 
+              style="padding:6px 14px;border:none;background:${currentAction === 'ignore' ? 'var(--red)' : 'transparent'};color:${currentAction === 'ignore' ? '#fff' : 'var(--text2)'};border-radius:18px;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s;text-align:center"
+              onmouseover="this.style.background='${currentAction === 'ignore' ? 'var(--red)' : 'var(--bg3)}';"
+              onmouseout="this.style.background='${currentAction === 'ignore' ? 'var(--red)' : 'transparent'}';">
+              ⊘ Ignore
+            </button>
+          </div>
         </div>
       </div>`;
     });
@@ -6839,40 +6866,71 @@ const Admin = {
       html += `</div>`;
     }
     
+    // Store changes in overlay for use by confirm function
+    this._pendingChanges = changes;
+    
     document.getElementById('changesContainer').innerHTML = html;
     document.getElementById('unsavedChangesOverlay').style.display = 'flex';
     AppLog.add('Admin', 'Unsaved changes overlay displayed', 'INF',
       `${tabsWithChanges.length} of ${tabs.length} tabs have changes`);
   },
   
-  async _saveTabChanges(tabId) {
-    AppLog.add('Admin', `Save tab changes - ${tabId}`, 'RUN', 'Saving single tab to GitHub');
-    try {
-      await Cfg.save();
-      await ConfigSync.push(true);
-      AppLog.add('Admin', `Tab saved - ${tabId}`, 'OK', 'Changes saved to GitHub');
-      
-      // Update original config so this tab is no longer marked as changed
-      this._originalConfig = JSON.parse(JSON.stringify(Cfg.d));
-      
-      // Refresh overlay
-      const changes = this._detectAllChanges();
-      if (Object.keys(changes).length > 0) {
-        this._showUnsavedChangesOverlay(changes);
-      } else {
-        // No more changes, close overlay and panel
-        document.getElementById('unsavedChangesOverlay').style.display = 'none';
-        AppLog.add('Admin', 'All changes saved', 'OK', 'No more unsaved changes - closing panel');
-        setTimeout(() => this._closePanel(), 500);
-      }
-    } catch(e) {
-      AppLog.add('Admin', `Tab save failed - ${tabId}`, 'ERR', e.message);
-      alert('Failed to save: ' + e.message);
+  _toggleTabAction(tabId, action) {
+    if (this._pendingChanges && this._pendingChanges[tabId]) {
+      this._pendingChanges[tabId].action = action;
+      AppLog.add('Admin', `Toggle action - ${tabId}`, 'INF',
+        `Action set to: ${action}`);
+      // Re-render overlay to show updated toggle state
+      this._showUnsavedChangesOverlay(this._pendingChanges);
     }
   },
   
-  async _ignoreTabChanges(tabId) {
-    AppLog.add('Admin', `Ignore tab changes - ${tabId}`, 'INF', 'Reverting this tab');
+  async _confirmUnsavedChanges() {
+    if (!this._pendingChanges) return;
+    
+    AppLog.add('Admin', 'Confirm unsaved changes', 'RUN',
+      `Processing changes with admin-selected actions`);
+    
+    try {
+      // Process each tab according to its action
+      for (const tabId in this._pendingChanges) {
+        const tabData = this._pendingChanges[tabId];
+        const action = tabData.action;
+        
+        if (action === 'save') {
+          AppLog.add('Admin', `Processing tab: ${tabId}`, 'INF',
+            `Action: SAVE - keeping current changes`);
+          // Keep current changes in Cfg.d (no revert needed)
+        } else if (action === 'ignore') {
+          AppLog.add('Admin', `Processing tab: ${tabId}`, 'INF',
+            `Action: IGNORE - reverting to original`);
+          // Revert this tab's section to original
+          await this._applyTabIgnore(tabId);
+        }
+      }
+      
+      // Save to IndexedDB
+      AppLog.add('Admin', 'Confirm: saving to IndexedDB', 'RUN', '');
+      await Cfg.save();
+      
+      // Push to GitHub
+      AppLog.add('Admin', 'Confirm: pushing to GitHub', 'RUN', '');
+      await ConfigSync.push(true);
+      
+      AppLog.add('Admin', 'Confirm completed', 'OK',
+        `All changes processed and saved to GitHub`);
+      
+      document.getElementById('unsavedChangesOverlay').style.display = 'none';
+      setTimeout(() => this._closePanel(), 500);
+      
+    } catch(e) {
+      AppLog.add('Admin', 'Confirm failed', 'ERR', e.message);
+      alert('Failed to save changes: ' + e.message);
+    }
+  },
+  
+  async _applyTabIgnore(tabId) {
+    if (!this._originalConfig) return;
     
     // Revert this tab's section to original
     if (tabId === 'datasource') {
@@ -6904,47 +6962,28 @@ const Admin = {
     } else if (tabId === 'paramorder') {
       Cfg.d.paramOrder = JSON.parse(JSON.stringify(this._originalConfig.paramOrder || []));
     }
-    
-    // Refresh overlay
-    const changes = this._detectAllChanges();
-    if (Object.keys(changes).length > 0) {
-      this._showUnsavedChangesOverlay(changes);
-    } else {
-      // No more changes, close overlay and panel
-      document.getElementById('unsavedChangesOverlay').style.display = 'none';
-      AppLog.add('Admin', 'All changes reverted', 'OK', 'No more unsaved changes - closing panel');
-      setTimeout(() => this._closePanel(), 500);
-    }
   },
   
   async _saveAllChanges() {
-    AppLog.add('Admin', 'Save all changes', 'RUN', 'Saving all unsaved tabs to GitHub');
+    AppLog.add('Admin', 'Save All clicked', 'RUN',
+      `Saving all unsaved changes to GitHub without review`);
+    
     try {
-      await Cfg.save();
-      await ConfigSync.push(true);
-      AppLog.add('Admin', 'All changes saved', 'OK', 'All changes saved to GitHub');
-      document.getElementById('unsavedChangesOverlay').style.display = 'none';
-      setTimeout(() => this._closePanel(), 500);
+      // Set all pending changes to 'save' action
+      if (this._pendingChanges) {
+        for (const tabId in this._pendingChanges) {
+          this._pendingChanges[tabId].action = 'save';
+        }
+      }
+      
+      // Proceed with confirm logic
+      AppLog.add('Admin', 'Save All: calling confirm logic', 'RUN', '');
+      await this._confirmUnsavedChanges();
+      
     } catch(e) {
-      AppLog.add('Admin', 'Save all failed', 'ERR', e.message);
+      AppLog.add('Admin', 'Save All failed', 'ERR', e.message);
       alert('Failed to save: ' + e.message);
     }
-  },
-  
-  async _discardAllChanges() {
-    if (!confirm('Are you sure? This will discard ALL unsaved changes across all tabs.')) {
-      return;
-    }
-    AppLog.add('Admin', 'Discard all changes', 'RUN', 'Reverting all unsaved changes');
-    
-    // Revert entire config to original
-    Object.keys(Cfg.d).forEach(key => {
-      Cfg.d[key] = JSON.parse(JSON.stringify(this._originalConfig[key]));
-    });
-    
-    AppLog.add('Admin', 'All changes discarded', 'OK', 'Config reverted to last saved state');
-    document.getElementById('unsavedChangesOverlay').style.display = 'none';
-    setTimeout(() => this._closePanel(), 500);
   },
   
   _cancelUnsavedOverlay() {
@@ -8670,6 +8709,13 @@ const ZoneSetupWizard = {
       </div>`;
     AppLog.add('Region', 'Zone setup prerequisite cancelled by admin', 'WARN',
       'Admin can retry by clicking Load Zones in Zone tab');
+  },
+
+  // Cancel sign-in from the overlay — hide overlay, stay in admin panel
+  _cancelSignIn() {
+    AppLog.add('Region', 'Zone sign-in cancelled', 'INF',
+      'Admin clicked Cancel on sign-in overlay - staying in admin panel');
+    this._prereqHide();
   },
 
   // Retry from the Load Zones inline button — reset flags and run
