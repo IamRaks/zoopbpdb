@@ -11,13 +11,189 @@
   "adminEmail": "zoopekm.proposals@gmail.com",
   "ghUsername": "IamRaks",
   "ghRepo": "zoopbpdb",
-  "zoneSetup": {},
+  "zoneSetup": {
+    "ERNAKULAM": {
+      "setupComplete": true,
+      "fyEndDate": "2026-03-31",
+      "fyEndBPFile": "2026-03-31",
+      "fyEndRDFile": "2026-03-31",
+      "lastValidated": "2026-06-01T03:16:29.422Z",
+      "lastValidatedBy": "admin",
+      "derivedRegions": [
+        {
+          "id": "UNDER_ZO",
+          "label": "UNDER ZO",
+          "isDefault": true
+        }
+      ],
+      "bpRegions": [
+        {
+          "roRaw": "35130-ERNAKULAM",
+          "roCode": "35130",
+          "roName": "ERNAKULAM",
+          "scopeKey": "35130-ERNAKULAM",
+          "isReal": true,
+          "derivedId": null,
+          "effectiveFrom": "2026-03-31",
+          "status": "authorised",
+          "firstSeenDate": "2026-03-31",
+          "firstSeenFile": "2026-03-31",
+          "authorisedBy": "admin",
+          "authorisedAt": "2026-06-01T03:15:02.807Z"
+        },
+        {
+          "roRaw": "36750-THIRUVANANTHAPURAM",
+          "roCode": "36750",
+          "roName": "THIRUVANANTHAPURAM",
+          "scopeKey": "36750-THIRUVANANTHAPURAM",
+          "isReal": true,
+          "derivedId": null,
+          "effectiveFrom": "2026-03-31",
+          "status": "authorised",
+          "firstSeenDate": "2026-03-31",
+          "firstSeenFile": "2026-03-31",
+          "authorisedBy": "admin",
+          "authorisedAt": "2026-06-01T03:15:02.807Z"
+        },
+        {
+          "roRaw": "56140-KOZHIKODE",
+          "roCode": "56140",
+          "roName": "KOZHIKODE",
+          "scopeKey": "56140-KOZHIKODE",
+          "isReal": true,
+          "derivedId": null,
+          "effectiveFrom": "2026-03-31",
+          "status": "authorised",
+          "firstSeenDate": "2026-03-31",
+          "firstSeenFile": "2026-03-31",
+          "authorisedBy": "admin",
+          "authorisedAt": "2026-06-01T03:15:02.807Z"
+        },
+        {
+          "roRaw": "67280-KOTTAYAM",
+          "roCode": "67280",
+          "roName": "KOTTAYAM",
+          "scopeKey": "67280-KOTTAYAM",
+          "isReal": true,
+          "derivedId": null,
+          "effectiveFrom": "2026-03-31",
+          "status": "authorised",
+          "firstSeenDate": "2026-03-31",
+          "firstSeenFile": "2026-03-31",
+          "authorisedBy": "admin",
+          "authorisedAt": "2026-06-01T03:15:02.807Z"
+        },
+        {
+          "roRaw": "78480-THRISSUR",
+          "roCode": "78480",
+          "roName": "THRISSUR",
+          "scopeKey": "78480-THRISSUR",
+          "isReal": true,
+          "derivedId": null,
+          "effectiveFrom": "2026-03-31",
+          "status": "authorised",
+          "firstSeenDate": "2026-03-31",
+          "firstSeenFile": "2026-03-31",
+          "authorisedBy": "admin",
+          "authorisedAt": "2026-06-01T03:15:02.807Z"
+        },
+        {
+          "roRaw": "78490-KOLLAM",
+          "roCode": "78490",
+          "roName": "KOLLAM",
+          "scopeKey": "78490-KOLLAM",
+          "isReal": true,
+          "derivedId": null,
+          "effectiveFrom": "2026-03-31",
+          "status": "authorised",
+          "firstSeenDate": "2026-03-31",
+          "firstSeenFile": "2026-03-31",
+          "authorisedBy": "admin",
+          "authorisedAt": "2026-06-01T03:15:02.807Z"
+        },
+        {
+          "roRaw": "NULL",
+          "roCode": null,
+          "roName": "NULL",
+          "scopeKey": null,
+          "isReal": false,
+          "derivedId": "UNDER_ZO",
+          "effectiveFrom": null,
+          "status": "authorised",
+          "firstSeenDate": "2026-03-31",
+          "firstSeenFile": "2026-03-31",
+          "authorisedBy": "admin",
+          "authorisedAt": "2026-06-01T03:15:02.807Z"
+        }
+      ],
+      "rdMappings": [
+        {
+          "rdRegion": "ERNAKULAM",
+          "bpScopeKey": "35130-ERNAKULAM",
+          "matchType": "auto",
+          "status": "confirmed",
+          "confirmedBy": "admin",
+          "confirmedAt": "2026-06-01T03:16:29.422Z"
+        },
+        {
+          "rdRegion": "KOLLAM",
+          "bpScopeKey": "78490-KOLLAM",
+          "matchType": "auto",
+          "status": "confirmed",
+          "confirmedBy": "admin",
+          "confirmedAt": "2026-06-01T03:16:29.422Z"
+        },
+        {
+          "rdRegion": "KOTTAYAM",
+          "bpScopeKey": "67280-KOTTAYAM",
+          "matchType": "auto",
+          "status": "confirmed",
+          "confirmedBy": "admin",
+          "confirmedAt": "2026-06-01T03:16:29.422Z"
+        },
+        {
+          "rdRegion": "KOZHIKODE",
+          "bpScopeKey": "56140-KOZHIKODE",
+          "matchType": "auto",
+          "status": "confirmed",
+          "confirmedBy": "admin",
+          "confirmedAt": "2026-06-01T03:16:29.422Z"
+        },
+        {
+          "rdRegion": "LCB-ERNAKULAM",
+          "bpScopeKey": "UNDER_ZO",
+          "matchType": "partial",
+          "status": "confirmed",
+          "confirmedBy": "admin",
+          "confirmedAt": "2026-06-01T03:16:29.422Z"
+        },
+        {
+          "rdRegion": "THIRUVANANTHAPURAM",
+          "bpScopeKey": "36750-THIRUVANANTHAPURAM",
+          "matchType": "auto",
+          "status": "confirmed",
+          "confirmedBy": "admin",
+          "confirmedAt": "2026-06-01T03:16:29.422Z"
+        },
+        {
+          "rdRegion": "THRISSUR",
+          "bpScopeKey": "78480-THRISSUR",
+          "matchType": "auto",
+          "status": "confirmed",
+          "confirmedBy": "admin",
+          "confirmedAt": "2026-06-01T03:16:29.422Z"
+        }
+      ],
+      "pendingReview": [],
+      "lastUpdated": "2026-06-01T03:16:29.442Z"
+    }
+  },
   "ejsServiceId": "service_8x5yn04",
   "ejsTemplateId": "template_l8mbtk9",
   "ejsPublicKey": "IaT9mZNSS_294Z_J6",
   "adminResetToken": "",
   "adminResetExpiry": 0,
-  "activeZone": "",
+  "activeZone": "ERNAKULAM",
   "displayUnit": "lacs",
   "theme": "dark",
   "holidaySats": [
@@ -432,7 +608,16 @@
     "Standard Advance (Core)::Total Advance",
     "Standard Advance (Core)::Retail",
     "Standard Advance (Core)::Agri",
-    "Standard Advance (Core)::MSME"
+    "Standard Advance (Core)::MSME",
+    "Retail_Deposits_PositionSummary::SBA COUNT",
+    "Retail_Deposits_PositionSummary::SBA BALANCE",
+    "Retail_Deposits_PositionSummary::CAA COUNT",
+    "Retail_Deposits_PositionSummary::CAA BALANCE",
+    "Retail_Deposits_PositionSummary::TDA COUNT",
+    "Retail_Deposits_PositionSummary::TDA BALANCE",
+    "Retail_Deposits_PositionSummary::SBA Below 3Cr",
+    "Retail_Deposits_PositionSummary::CAA Below 3Cr",
+    "Retail_Deposits_PositionSummary::TDA Below 3Cr"
   ],
   "derivedParams": [
     {
@@ -537,6 +722,6 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-05-31T15:12:35.505Z",
+  "_savedAt": "2026-06-01T03:16:30.520Z",
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
