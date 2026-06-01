@@ -198,8 +198,7 @@
   "theme": "dark",
   "holidaySats": [
     2,
-    4,
-    5
+    4
   ],
   "periods": {
     "latest": {
@@ -228,7 +227,7 @@
       "fmt": "mmm-yyyy"
     },
     "weekend": {
-      "enabled": true,
+      "enabled": false,
       "label": "Last Weekend",
       "fmt": "dd-mm-yyyy"
     }
@@ -316,19 +315,19 @@
       "id": "weekend_val",
       "type": "value",
       "periodKey": "weekend",
-      "enabled": true
+      "enabled": false
     },
     {
       "id": "weekend_abs",
       "type": "abs",
       "periodKey": "weekend",
-      "enabled": true
+      "enabled": false
     },
     {
       "id": "weekend_pct",
       "type": "pct",
       "periodKey": "weekend",
-      "enabled": true
+      "enabled": false
     }
   ],
   "sheets": {
@@ -716,7 +715,7 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-06-01T09:06:30.567Z",
+  "_savedAt": "2026-06-01T17:23:42.111Z",
   "bpSchema": {
     "sourceDate": "2026-05-22",
     "ros": [
