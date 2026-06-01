@@ -1658,7 +1658,7 @@ const Cfg = {
       {id:'weekend_pct',  type:'pct',   periodKey:'weekend',  enabled:false},
     ],
     sheets:{}, paramOrder:[], derivedParams:[],
-    summaryFileIds:{ meta:null, recent:null, history:null },
+    summaryFileIds:{ meta:null, recent:null, history:null, branchMeta:null, branchRecent:null, branchHistory:null },
     // Sheet IDs for converted XLSX files — keyed by dateStr
     // Survives browser data clear via config.json on GitHub
     // Each entry: { bpSheetId, bpConvertedVersion, rdSheetId, rdConvertedVersion }
@@ -1687,6 +1687,11 @@ const Cfg = {
     // An empty {} in a stale config.json must not wipe locally-known sheet IDs.
     if (stored.fileIndexSheetIds && Object.keys(stored.fileIndexSheetIds).length > 0) {
       out.fileIndexSheetIds = Object.assign({}, def.fileIndexSheetIds || {}, stored.fileIndexSheetIds);
+    }
+    // summaryFileIds: merge stored values on top of defaults so branch file IDs
+    // (branchMeta/branchRecent/branchHistory) are preserved across config saves.
+    if (stored.summaryFileIds && typeof stored.summaryFileIds === 'object') {
+      out.summaryFileIds = Object.assign({}, def.summaryFileIds || {}, stored.summaryFileIds);
     }
     return out;
   },
@@ -4005,6 +4010,46 @@ const GDrive = {
 };
 
 // ================================================================
+// BRANCH CHART STORE — separate IndexedDB store for branch summaries
+// ================================================================
+const BranchChartStore = {
+  // IndexedDB key: `${zone}|branch|summary`
+
+  async _getStore(zone) {
+    const key = `${zone}|branch|summary`;
+    return await DB.get('chartData', key) || { dates: {}, lastUpdated: '' };
+  },
+
+  async _setStore(zone, store) {
+    store.lastUpdated = new Date().toISOString();
+    await DB.set('chartData', `${zone}|branch|summary`, store);
+  },
+
+  // Write branch aggregates for one date.
+  // branchScopeMap: { 'NNNNN-BranchName': { paramKey: value, ... }, ... }
+  async writeDate(dateStr, zone, branchScopeMap) {
+    if (!branchScopeMap || !Object.keys(branchScopeMap).length) return;
+    const store = await this._getStore(zone);
+    store.dates[dateStr] = branchScopeMap; // full replace — not Object.assign
+    await this._setStore(zone, store);
+  },
+
+  // Get all dates with branch data, sorted ascending
+  async getSortedDates(zone) {
+    const store = await this._getStore(zone);
+    return Object.keys(store.dates).sort();
+  },
+
+  // Get all known branch scope keys across all dates
+  async getScopeKeys(zone) {
+    const store = await this._getStore(zone);
+    const keys = new Set();
+    Object.values(store.dates).forEach(e => Object.keys(e).forEach(k => keys.add(k)));
+    return [...keys].sort();
+  },
+};
+
+// ================================================================
 // FOLDER MANAGER
 // ================================================================
 const FM = {
@@ -5516,6 +5561,164 @@ const SummaryMgr = {
 
 
 // ================================================================
+// BRANCH SUMMARY MANAGER — chunked BRANCH_SUMMARY files on Drive
+// ================================================================
+const BranchSummary = {
+  FILES: {
+    meta:    'BRANCH_SUMMARY_META.json',
+    recent:  'BRANCH_SUMMARY_RECENT.json',
+    history: 'BRANCH_SUMMARY_HISTORY.json',
+  },
+  _ids: {},
+  RECENT_DAYS: 35, // match ChartStore.RECENT_DAYS
+
+  async _folderId() {
+    const bpFolderId = Cfg.get('gBpFolderId');
+    if (!bpFolderId) return null;
+    const parentId = await GDrive._getParentFolderId(bpFolderId);
+    return parentId || bpFolderId;
+  },
+
+  _cutoffDate() {
+    const d = new Date();
+    d.setDate(d.getDate() - this.RECENT_DAYS);
+    return DL.toYMD(d);
+  },
+
+  // Build META/RECENT/HISTORY chunks from the BranchChartStore.
+  buildChunks(zone, store, fileVersions) {
+    const cutoff = this._cutoffDate();
+    const allDates = Object.keys(store.dates).sort();
+
+    // Pin essential period dates so dashboard always works
+    const now = new Date();
+    const mustInclude = new Set([
+      DL.toYMD(DL.fyEnd(now)),
+      DL.toYMD(DL.monthEnd(now)),
+      DL.toYMD(DL.qtrEnd(now)),
+    ].filter(Boolean));
+    allDates.filter(d => d.endsWith('-03-31')).forEach(d => mustInclude.add(d));
+    const dpd = (typeof Dashboard !== 'undefined' && Dashboard.state?.periodDates) || {};
+    Object.values(dpd).filter(Boolean).forEach(d => mustInclude.add(d));
+
+    const recentDates  = allDates.filter(d => d >= cutoff || mustInclude.has(d));
+    const historyDates = allDates.filter(d => d < cutoff && !mustInclude.has(d));
+
+    const pick = (dates) => {
+      const obj = {};
+      dates.forEach(d => { obj[d] = store.dates[d]; });
+      return obj;
+    };
+
+    const meta = {
+      schemaVersion: 1,
+      zone,
+      lastUpdated: new Date().toISOString(),
+      fileVersions: fileVersions || {},
+      pinnedDates: [...mustInclude].filter(d => allDates.includes(d)),
+      // Store period dates in meta for fast essential-only access
+      periodDates: dpd,
+      chunks: {
+        recent: {
+          dateCount: recentDates.length,
+          oldest: recentDates[0] || null,
+          newest: recentDates[recentDates.length - 1] || null,
+        },
+        history: historyDates.length
+          ? { dateCount: historyDates.length, oldest: historyDates[0], newest: historyDates[historyDates.length - 1] }
+          : null,
+      },
+    };
+
+    return {
+      meta,
+      recent:  { _meta: { chunk: 'recent', zone, periodDates: dpd }, dates: pick(recentDates) },
+      history: historyDates.length
+        ? { _meta: { chunk: 'history', zone }, dates: pick(historyDates) }
+        : null,
+    };
+  },
+
+  // Detect which dates in BranchChartStore are missing or have changed versions.
+  async detectChanges(zone) {
+    const branchVersions = await DB.get('config', 'branchSummaryVersions') || {};
+    const summaryVersions = await DB.get('config', 'summaryFileVersions') || {};
+    const branchStore = await BranchChartStore._getStore(zone);
+    const existingBranchDates = new Set(Object.keys(branchStore.dates || {}));
+    const changed = [];
+
+    // Include dates that have been rebuilt (in summaryVersions) but not yet
+    // reflected in branchVersions
+    for (const [dateStr, sv] of Object.entries(summaryVersions)) {
+      const bv = branchVersions[dateStr];
+      if (!existingBranchDates.has(dateStr) || !bv ||
+          bv.bp !== sv.bp || bv.rd !== sv.rd) {
+        changed.push(dateStr);
+      }
+    }
+    return changed;
+  },
+
+  // Push branch summary chunks to Drive (requires token).
+  async pushToDrive(zone) {
+    zone = zone || Cfg.get('activeZone');
+    if (!zone) return;
+    const folderId = await this._folderId();
+    if (!folderId) return;
+    const token = await GDrive.getToken(false).catch(() => null);
+    if (!token) return;
+    const store = await BranchChartStore._getStore(zone);
+    if (!store?.dates || !Object.keys(store.dates).length) return;
+
+    const fv = await DB.get('config', 'summaryFileVersions') || {};
+    const chunks = this.buildChunks(zone, store, fv);
+
+    // Cache existing file IDs
+    for (const [key, name] of Object.entries(this.FILES)) {
+      if (!this._ids[key]) {
+        const f = await SummaryMgr._findFile(token, folderId, name);
+        if (f) this._ids[key] = f.id;
+      }
+    }
+
+    // Upload chunks
+    this._ids.meta   = await SummaryMgr._uploadFile(token, folderId, this.FILES.meta,   chunks.meta,   this._ids.meta   || null);
+    this._ids.recent = await SummaryMgr._uploadFile(token, folderId, this.FILES.recent, chunks.recent, this._ids.recent || null);
+    if (chunks.history)
+      this._ids.history = await SummaryMgr._uploadFile(token, folderId, this.FILES.history, chunks.history, this._ids.history || null);
+
+    // Make files publicly readable
+    const makePublic = async (fileId) => {
+      if (!fileId) return;
+      await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'reader', type: 'anyone' }),
+      }).catch(() => {});
+    };
+    await makePublic(this._ids.meta);
+    await makePublic(this._ids.recent);
+    if (this._ids.history) await makePublic(this._ids.history);
+
+    // Save branch file IDs back into summaryFileIds
+    const existingIds = Cfg.get('summaryFileIds') || {};
+    existingIds.branchMeta    = this._ids.meta    || null;
+    existingIds.branchRecent  = this._ids.recent  || null;
+    existingIds.branchHistory = this._ids.history || null;
+    Cfg.set('summaryFileIds', existingIds);
+
+    // Update branchSummaryVersions to match current summaryFileVersions
+    const sv = await DB.get('config', 'summaryFileVersions') || {};
+    await DB.set('config', 'branchSummaryVersions', sv);
+    await DB.set('config', 'branchSummaryLastUpdated', Date.now());
+
+    AppLog.add('BranchSummary', 'Branch summary pushed to Drive', 'OK',
+      `recent=${this._ids.recent?.substring(0, 12) || 'null'} history=${this._ids.history?.substring(0, 12) || 'null'}`);
+  },
+};
+
+
+// ================================================================
 // DATA INTEGRITY — automatic chart data sync on every load
 // ================================================================
 const DataIntegrity = {
@@ -5931,6 +6134,42 @@ const DataIntegrity = {
         rd: entry.rdSheetId ? (entry.rdVersion || entry.rdModifiedTime || 'v1') : null
       };
 
+      // ── Compute branch aggregates and write to BranchChartStore ──
+      try {
+        const bpData = await DB.get('bpFiles', dateStr);
+        if (bpData) {
+          // Collect all branch keys for this zone from the BP data
+          const allBranchKeys = new Set();
+          Object.values(bpData.sheets || {}).forEach(sheet => {
+            (sheet.rows || [])
+              .filter(r => r['ZO'] === zone && r['BRANCH'])
+              .forEach(r => allBranchKeys.add(r['BRANCH']));
+          });
+
+          if (allBranchKeys.size > 0) {
+            const branchScopeMap = {};
+            DE._cache = {};
+            for (const branchKey of allBranchKeys) {
+              try {
+                const bAgg = await DE.getAgg(dateStr, { type: 'branch', zone, branchKey, dateStr }, false);
+                if (bAgg?.values && Object.keys(bAgg.values).length) {
+                  branchScopeMap[branchKey] = bAgg.values;
+                }
+              } catch(be) { /* skip this branch on error */ }
+            }
+            if (Object.keys(branchScopeMap).length) {
+              await BranchChartStore.writeDate(dateStr, zone, branchScopeMap);
+            }
+          }
+        }
+      } catch(be) {
+        console.warn('_processOneDate branch aggregation error:', dateStr, be.message);
+      }
+
+      // Update branch version tracking in versions object
+      if (!versions[dateStr]) versions[dateStr] = {};
+      versions[dateStr].branchsBuiltAt = new Date().toISOString();
+
       // Clean up temp files unless needed for dashboard
       const periodDates = new Set(Object.values(Dashboard.state.periodDates).filter(Boolean));
       if (!periodDates.has(dateStr)) {
@@ -5949,9 +6188,23 @@ const DataIntegrity = {
     try {
       const token = await GDrive.getToken(false).catch(() => null);
       if (!token) return; // no OAuth token — can't push
+
+      // Push zone/region summary (existing)
       await SummaryMgr.pushToDriveWithVersions(zone);
-      await DB.set('config','summaryLastUpdated', Date.now());
-      console.log('DataIntegrity: summary pushed to Drive');
+      await DB.set('config', 'summaryLastUpdated', Date.now());
+      console.log('DataIntegrity: zone summary pushed to Drive');
+
+      // Push branch summary (new)
+      try {
+        await BranchSummary.pushToDrive(zone);
+        console.log('DataIntegrity: branch summary pushed to Drive');
+      } catch(be) {
+        console.warn('DataIntegrity: branch summary push failed:', be.message);
+      }
+
+      // Persist updated config (includes branchMeta/branchRecent/branchHistory IDs)
+      await Cfg.save();
+      await ConfigSync.push(true);
     } catch(e) { console.warn('_pushIfPossible:', e.message); }
   },
 
@@ -6164,6 +6417,12 @@ const DataIntegrity = {
       // only partially overwrites. Full clear ensures a clean slate.
       await ChartStore._setStore(zone, { dates: {}, lastUpdated: new Date().toISOString() });
       log('', 'App', 'ChartStore cleared — clean rebuild', 'OK', `Zone: ${zone}`);
+
+      // ── Clear BranchChartStore for this zone ──────────────────────
+      await BranchChartStore._setStore(zone, { dates: {}, lastUpdated: new Date().toISOString() });
+      BranchSummary._ids = {};
+      await DB.set('config', 'branchSummaryVersions', {});
+      log('', 'App', 'BranchChartStore cleared — clean rebuild', 'OK', `Zone: ${zone}`);
 
       // ── Step 0: Check GitHub PAT is available ─────────────────
       const pat = await ConfigSync.getPat();
