@@ -3386,10 +3386,14 @@ const GDrive = {
   },
 
   async signIn() {
+    AppLog.add('Drive', 'signIn() called - OAuth flow starting', 'RUN', 'User clicked Sign In button');
     try {
+      AppLog.add('Drive', 'signIn: calling getToken(true)', 'RUN', 'Requesting OAuth consent');
       await this.getToken(true);
+      AppLog.add('Drive', 'signIn: OAuth successful', 'OK', `token=${this.token ? this.token.substring(0,20)+'…' : 'null'} | expiry=${this.tokenExpiry ? new Date(this.tokenExpiry).toISOString() : 'null'}`);
       this._updateUI(true);
     } catch(e) {
+      AppLog.add('Drive', 'signIn: OAuth failed', 'ERR', e.message);
       if (e.message !== 'popup_closed') this._updateUI(false, null, e.message);
     }
   },
@@ -8307,64 +8311,117 @@ const ZoneSetupWizard = {
   // has NOT explicitly cancelled this session (_prereqCancelled = false).
   // After cancel: shows inline "Load Zones" button instead.
   async _ensureReady() {
+    AppLog.add('Region', 'Zone setup: _ensureReady() called', 'RUN',
+      `_allBPRows=${this._allBPRows && this._allBPRows.length ? this._allBPRows.length+' rows' : 'empty'} | _prereqCancelled=${this._prereqCancelled}`);
+    
     this._status1('');
 
     // If already loaded successfully this session, skip
-    if (this._allBPRows && this._allBPRows.length) return;
+    if (this._allBPRows && this._allBPRows.length) {
+      AppLog.add('Region', 'Zone setup: _ensureReady SKIPPED (already loaded)', 'INF',
+        `Using cached _allBPRows with ${this._allBPRows.length} rows`);
+      return;
+    }
 
     // ── Step A: Check token ──────────────────────────────────
+    AppLog.add('Region', 'Zone setup Step A: Checking cached token', 'RUN',
+      `GDrive.getToken(false) to check if token exists`);
+    
     let token = await GDrive.getToken(false).catch(() => null);
+    AppLog.add('Region', 'Zone setup Step A: Token check result', token ? 'OK' : 'ERR',
+      `token=${token ? token.substring(0,20)+'…' : 'NULL'} | GDrive.token=${GDrive.token ? 'set' : 'null'} | GDrive.tokenExpiry=${GDrive.tokenExpiry ? new Date(GDrive.tokenExpiry).toISOString() : 'null'}`);
+    
     if (!token) {
       if (this._prereqCancelled) {
+        AppLog.add('Region', 'Zone setup: _ensureReady no token but admin cancelled', 'INF',
+          'Showing inline Load Zones button instead of overlay');
         // Admin already cancelled — show inline button, no overlay
         this._prereqCancel();
         return;
       }
+      AppLog.add('Region', 'Zone setup Step A: No token - showing Sign In overlay', 'RUN',
+        'Displaying OAuth sign-in button in overlay');
+      
       this._prereqShow('🔑', 'Sign In Required',
         'Zone setup requires access to Google Drive to load the FY End BP file. Sign in to continue.',
         'Sign In to Google Drive', false);
       this._prereqCallback = async () => {
+        AppLog.add('Region', 'Zone setup: Admin clicked Sign In button', 'RUN',
+          'Initiating OAuth flow from wizard overlay');
+        
         const btn = document.getElementById('prereqActionBtn');
         if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
         try {
+          AppLog.add('Region', 'Zone setup: Calling getToken(true) from wizard', 'RUN',
+            'Requesting OAuth consent with full scope');
+          
           token = await GDrive.getToken(true);
+          AppLog.add('Region', 'Zone setup: OAuth successful from wizard', 'OK',
+            `token=${token ? token.substring(0,20)+'…' : 'null'} | expiry=${GDrive.tokenExpiry ? new Date(GDrive.tokenExpiry).toISOString() : 'null'}`);
         } catch(e) {
+          AppLog.add('Region', 'Zone setup: OAuth failed from wizard', 'ERR', e.message);
           this._prereqError('Sign in failed — ' + e.message + '. Please try again.');
           return;
         }
-        AppLog.add('Region', 'Zone setup: Drive sign in successful', 'OK', '');
+        AppLog.add('Region', 'Zone setup: Drive sign in successful', 'OK', 'Token acquired, proceeding to file sync');
         await this._ensureReadyAfterSignIn(token);
       };
       return;
     }
 
     // Token available — proceed automatically (no overlay unless something fails)
+    AppLog.add('Region', 'Zone setup Step A: Token exists - proceeding without sign-in', 'OK',
+      'Cached token is valid, skipping OAuth flow');
+    
     await this._ensureReadyAfterSignIn(token);
   },
 
   async _ensureReadyAfterSignIn(token) {
+    AppLog.add('Region', 'Zone setup: _ensureReadyAfterSignIn called', 'RUN',
+      `token=${token ? token.substring(0,20)+'…' : 'NULL'} | GDrive.tokenExpiry=${GDrive.tokenExpiry ? new Date(GDrive.tokenExpiry).toISOString() : 'null'}`);
+    
     this._prereqAborted = false; // reset abort flag at start of a fresh run
     // ── Step B: File index ────────────────────────────────────
     this._prereqShow('⚙', 'Syncing Drive', 'Checking file index...', '', true);
     this._prereqProgress(10, 'Checking file index...', 'Syncing Drive');
+    AppLog.add('Region', 'Zone setup Step B: Checking file index', 'RUN',
+      `DB.keys('fileIndex') to count dates in index`);
 
     let allDates = await DB.keys('fileIndex');
+    AppLog.add('Region', 'Zone setup Step B: File index check result', 'OK',
+      `allDates=${JSON.stringify(allDates)} | Count: ${allDates.length}`);
+    
     if (!allDates.length) {
+      AppLog.add('Region', 'Zone setup Step B: File index empty - syncing Drive', 'RUN',
+        'Calling GDrive.syncNow() to fetch files from Drive');
+      
       this._prereqProgress(20, 'Syncing files from Google Drive...', 'Syncing Drive');
-      AppLog.add('Region', 'Zone setup: auto-syncing Drive', 'RUN', '');
+      AppLog.add('Region', 'Zone setup: auto-syncing Drive', 'RUN', 'Starting Drive sync with token');
       try {
+        AppLog.add('Region', 'Zone setup Step B.1: Calling GDrive.syncNow(true)', 'RUN',
+          `syncNow(isAdmin=true) to download all BP/RD files from Drive`);
+        
         await GDrive.syncNow(true);
-        if (this._prereqAborted) return; // admin cancelled
+        AppLog.add('Region', 'Zone setup Step B.1: GDrive.syncNow() completed', 'OK',
+          'Files synced from Drive, now checking file index again');
+        
         allDates = await DB.keys('fileIndex');
+        AppLog.add('Region', 'Zone setup Step B.2: After sync - file index', 'OK',
+          `allDates=${JSON.stringify(allDates)} | Count: ${allDates.length}`);
       } catch(e) {
-        if (this._prereqAborted) return;
+        AppLog.add('Region', 'Zone setup Step B: Drive sync failed', 'ERR', e.message);
         this._prereqError('Drive sync failed: ' + e.message + ' — Check BP Folder ID in Data Source settings.');
         return;
       }
       if (!allDates.length) {
+        AppLog.add('Region', 'Zone setup Step B: After sync - still no files', 'ERR',
+          'Even after sync, no BP files found in Drive folder');
         this._prereqError('No BP files found in your Drive folder. Upload BP files and ensure the folder ID is correct.');
         return;
       }
+    } else {
+      AppLog.add('Region', 'Zone setup Step B: File index already populated', 'INF',
+        `Skipping Drive sync - ${allDates.length} dates already in index`);
     }
     this._prereqProgress(38, allDates.length + ' dates in file index', 'Syncing Drive');
 
