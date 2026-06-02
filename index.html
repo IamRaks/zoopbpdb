@@ -474,6 +474,14 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <div class="landing-status" id="landingStatus">
       <div class="spin" id="landingSpin"></div>
       <span class="status-txt" id="landingStatusTxt">Initialising...</span>
+      <button
+        onclick="App.showActivityLog()"
+        title="View Activity Log"
+        style="margin-left:auto;background:none;border:1px solid var(--border);
+               color:var(--text3);border-radius:6px;padding:3px 9px;font-size:10px;
+               cursor:pointer;white-space:nowrap;flex-shrink:0">
+        📋 Log
+      </button>
     </div>
     <div class="quicklinks">
       <!-- Online Services -->
@@ -10743,18 +10751,25 @@ const App = {
     const stTxt = document.getElementById('landingStatusTxt');
     if (stTxt) stTxt.textContent = '';
 
-    // Replace status area with admin prompt
+    // Replace status area with admin prompt — keep Log button visible
     const st = document.getElementById('landingStatus');
     if (st) {
       st.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:8px;width:100%;padding:6px 0">
+        <div style="display:flex;flex-direction:column;gap:8px;flex:1;padding:6px 0">
           <span style="font-size:13px;font-weight:600;color:var(--neg,#f85149)">⚠️ Dashboard data not available</span>
           <span style="font-size:11px;color:var(--text3)">Summary not configured or not yet built. Contact your Administrator.</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn-s" onclick="App.openAdminPrompt()">⚙ Admin Login</button>
-            <button class="btn-s" style="background:var(--bg3)" onclick="App.showActivityLog()">📋 View Activity Log</button>
           </div>
-        </div>`;
+        </div>
+        <button
+          onclick="App.showActivityLog()"
+          title="View Activity Log"
+          style="margin-left:auto;align-self:flex-start;background:none;border:1px solid var(--border);
+                 color:var(--text3);border-radius:6px;padding:3px 9px;font-size:10px;
+                 cursor:pointer;white-space:nowrap;flex-shrink:0">
+          📋 Log
+        </button>`;
     }
     // Fill progress bar to 100% in red to signal failure
     const pf = document.getElementById('landingProgFill');
