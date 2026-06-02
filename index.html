@@ -11259,18 +11259,28 @@ const App = {
   setUnit(u){Dashboard.setUnit(u);}
 };
 
-try {
-  App.init().catch(e => {
-    console.error('App.init() failed:', e);
-    const st = document.getElementById('landingStatusTxt');
-    if (st) st.textContent = '✗ Startup failed: ' + (e?.message || e);
-    AppLog.add('App', 'Fatal error during startup', 'ERR', e?.message || JSON.stringify(e));
+// Yield to browser renderer before starting App.init().
+// The inline script is render-blocking — by the time execution reaches here,
+// the HTML is parsed but NOT painted. Without yielding, App.init() runs
+// while the browser is still compositing, so status updates are never shown
+// and the landing page appears frozen at "Initialising...".
+// Two nested rAF calls guarantee at least one full paint cycle completes first.
+requestAnimationFrame(() => {
+  requestAnimationFrame(() => {
+    try {
+      App.init().catch(e => {
+        console.error('App.init() failed:', e);
+        const st = document.getElementById('landingStatusTxt');
+        if (st) st.textContent = '✗ Startup failed: ' + (e?.message || e);
+        AppLog.add('App', 'Fatal error during startup', 'ERR', e?.message || JSON.stringify(e));
+      });
+    } catch(e) {
+      console.error('App.init() threw:', e);
+      const st = document.getElementById('landingStatusTxt');
+      if (st) st.textContent = '✗ Initialization error: ' + e.message;
+    }
   });
-} catch(e) {
-  console.error('App.init() threw:', e);
-  const st = document.getElementById('landingStatusTxt');
-  if (st) st.textContent = '✗ Initialization error';
-}
+});
 </script>
 </body>
 </html>
