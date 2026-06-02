@@ -11229,7 +11229,18 @@ const App = {
   setUnit(u){Dashboard.setUnit(u);}
 };
 
-App.init();
+try {
+  App.init().catch(e => {
+    console.error('App.init() failed:', e);
+    const st = document.getElementById('landingStatusTxt');
+    if (st) st.textContent = '✗ Startup failed: ' + (e?.message || e);
+    AppLog.add('App', 'Fatal error during startup', 'ERR', e?.message || JSON.stringify(e));
+  });
+} catch(e) {
+  console.error('App.init() threw:', e);
+  const st = document.getElementById('landingStatusTxt');
+  if (st) st.textContent = '✗ Initialization error';
+}
 </script>
 </body>
 </html>
