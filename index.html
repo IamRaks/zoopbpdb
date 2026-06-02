@@ -3232,7 +3232,24 @@ const ChartStore = {
 
     const pick = (dates) => {
       const obj = {};
-      dates.forEach(d => { obj[d] = store.dates[d]; });
+      const corrupt = [];
+      dates.forEach(d => {
+        const entry = store.dates[d];
+        // Only include dates that have a valid __zone__ key.
+        // Entries without __zone__ are incomplete (e.g. a single branch scope
+        // written by a failed rebuild) and must not go into the Drive summary.
+        if (entry?.['__zone__'] && Object.keys(entry['__zone__']).length > 0) {
+          obj[d] = entry;
+        } else {
+          corrupt.push(d);
+        }
+      });
+      if (corrupt.length) {
+        AppLog.add('Summary',
+          `Excluded ${corrupt.length} corrupt date(s) from summary push`,
+          'WARN',
+          `Dates missing __zone__: ${corrupt.join(', ')} — run Incremental Update to rebuild`);
+      }
       return obj;
     };
 
@@ -3856,96 +3873,12 @@ const GDrive = {
     Admin.refreshDriveStats().catch(() => {});
   },
 
-  // Auto-update chart summary after sync — runs silently in background
-  async _autoUpdateSummary() {
-    const zone = Cfg.get('activeZone');
-    if (!zone) return;
-    const bpFolderId = Cfg.get('gBpFolderId');
-    if (!bpFolderId) return;
-
-    // Get all indexed dates
-    const allIndexed = await DB.keys('fileIndex');
-    if (!allIndexed.length) return;
-
-    // Get dates already in chartData
-    const zoneKey = `${zone}|zone`;
-    const existing = await DB.get('chartData', zoneKey) || { dates: {} };
-    const existingDates = new Set(Object.keys(existing.dates));
-
-    // Find missing dates (max 30 at a time to avoid quota issues)
-    const missing = allIndexed
-      .filter(d => !existingDates.has(d))
-      .sort((a, b) => b.localeCompare(a)) // newest first
-      .slice(0, 30);
-
-    if (!missing.length) {
-      // Check if summary on Drive needs updating (new dates added since last push)
-      const localCount = Object.keys(existing.dates).length;
-      const lastPushCount = await DB.get('config', 'lastSummaryPushCount') || 0;
-      if (localCount > lastPushCount) {
-        await SummaryMgr.pushToDrive();
-        await DB.set('config', 'lastSummaryPushCount', localCount);
-      }
-      return;
-    }
-
-    console.log(`Chart summary: auto-updating ${missing.length} missing dates...`);
-
-    let added = 0;
-    for (const dateStr of missing) {
-      try {
-        const entry = await DB.get('fileIndex', dateStr);
-        if (!entry || !entry.bpSheetId) continue;
-
-        // Query Sheets API — only zone rows (~8KB)
-        const sheetData = await SheetsAPI.buildBPFromSheet(entry.bpSheetId, dateStr, zone);
-        if (!sheetData || !Object.keys(sheetData.sheets).length) continue;
-
-        // Temporarily cache for getAgg
-        await DB.set('bpFiles', dateStr, sheetData);
-        DE._cache = {};
-        const scopeMap = {};
-        const agg = await DE.getAgg(dateStr, { type: 'zone', zone }, false);
-        if (agg?.values && Object.keys(agg.values).length) {
-          scopeMap['__zone__'] = agg.values;
-          added++;
-        }
-        // Region aggregates
-        try {
-          const allRegions = await DE.getAllRegions(dateStr, zone, false);
-          if (allRegions?.regions) {
-            for (const rk of allRegions.regions) {
-              const rAgg = allRegions.data[rk];
-              if (rAgg?.values && Object.keys(rAgg.values).length) scopeMap[rk] = rAgg.values;
-            }
-          }
-        } catch(e) { console.warn('Region agg failed:', dateStr, e.message); }
-        if (Object.keys(scopeMap).length) await ChartStore.writeDate(dateStr, zone, scopeMap);
-
-        // Remove full file unless it's a dashboard period date
-        const periodDates = new Set(Object.values(Dashboard.state.periodDates).filter(Boolean));
-        if (!periodDates.has(dateStr)) await DB.del('bpFiles', dateStr);
-
-        // Small delay to respect API quota (300 req/min)
-        await new Promise(r => setTimeout(r, 250));
-      } catch(e) {
-        console.warn('Auto-summary skip:', dateStr, e.message);
-      }
-    }
-
-    if (added > 0) {
-
-      console.log(`Chart summary: added ${added} zone dates. Pushing to Drive...`);
-      await SummaryMgr.pushToDrive();
-      const updated = await DB.get('chartData', zoneKey);
-      const count = Object.keys(updated?.dates || {}).length;
-      await DB.set('config', 'lastSummaryPushCount', count);
-      // Refresh charts if dashboard is visible
-      if (Cfg.get('activeZone') && document.getElementById('dashWrap').style.display !== 'none') {
-        await Dashboard.refreshAll();
-      }
-    }
-  },
+  // _autoUpdateSummary was removed.
+  // Its purpose was to fill ChartStore gaps by fetching from Sheets API in the
+  // background. This violated the data flow — Sheets API access belongs exclusively
+  // to _processOneDate during a rebuild. ChartStore is a read-only mirror of the
+  // Drive summary for all non-rebuild paths. Gap-filling is done by the admin
+  // via Incremental Update or Force Rebuild.
 
   // Auto-sync on app open if Drive is configured
   async autoSync() {
@@ -4289,119 +4222,124 @@ const DE = {
     if(isPct)return vals.reduce((a,b)=>a+b,0)/vals.length;
     return vals.reduce((a,b)=>a+b,0);
   },
+  // ── Pure aggregation — takes already-fetched data, returns values ──────────
+  // Used exclusively by _processOneDate during rebuild.
+  // No fetching, no caching, no ChartStore writes.
+  // bpData: result of SheetsAPI.buildBPFromSheet  (or null)
+  // rdData: result of SheetsAPI.buildRDFromSheet  (or null)
+  computeAgg(bpData, rdData, scope) {
+    const sc = Cfg.get('sheets') || {};
+    const values = {};
+
+    if (bpData) {
+      for (const [sn, shc] of Object.entries(sc)) {
+        if (shc.source !== 'bp') continue;
+        const sd = bpData.sheets[sn]; if (!sd) continue;
+        const rows = this.filterBP(sd.rows, scope);
+        for (const col of Object.keys(shc.columns || {})) {
+          values[`${sn}::${col}`] = this.agg(rows, col, Parser.isPct(col));
+        }
+      }
+    }
+
+    if (rdData) {
+      for (const [sn, shc] of Object.entries(sc)) {
+        if (shc.source !== 'rd') continue;
+        const sd = rdData.sheets[sn]; if (!sd) continue;
+        const rows = this.filterRD(sd.rows, scope);
+        for (const col of Object.keys(shc.columns || {})) {
+          values[`${sn}::${col}`] = this.agg(rows, col, Parser.isPct(col));
+        }
+      }
+    }
+
+    // Derived params
+    for (const dp of (Cfg.get('derivedParams') || [])) {
+      try {
+        let val = null; let valid = true;
+        for (const tok of dp.tokens) {
+          const key = `${tok.sheet}::${tok.col}`;
+          if (!(key in values)) { valid = false; break; }
+          const tv = values[key] ?? 0;
+          val = val === null ? tv : (tok.op === '+' ? val + tv : val - tv);
+        }
+        values[`__d__::${dp.name}`] = valid ? val : null;
+      } catch(e) {}
+    }
+
+    return Object.keys(values).length ? values : null;
+  },
+
   async getAgg(dateStr,scope,fallback){
     // Check cache first
     const ck = this._cacheKey(dateStr, scope);
     if (this._cache[ck]) return this._cache[ck];
 
-    // FIX 1: Resolve BP first to get its actual date (may differ from dateStr if fallback used)
-    const bpF=await this.getBP(dateStr,fallback);
-    // FIX 2: RD uses BP's actual resolved date, not original dateStr
-    // This ensures BP and RD are always from the same day even when BP falls back
-    const rdDateStr=bpF?bpF.actual:dateStr;
-    const rdF=await this.getRD(rdDateStr);
+    // ── Read from ChartStore (summary) — the single source of truth ──────────
+    // For all callers (dashboard, charts, branch table) the summary is the
+    // source. getAgg never fetches from Sheets API — that is _processOneDate's
+    // exclusive responsibility during a rebuild.
+    const zone = Cfg.get('activeZone');
+    if (!zone) return null;
 
-    // ── chartData (summary) fallback ─────────────────────────────────────────
-    if (!bpF) {
-      const zone=Cfg.get('activeZone');
-      if (zone && (scope.type==='zone' || scope.type==='region')) {
-        const scopeKey = scope.type==='zone' ? '__zone__' : scope.region;
-        const store = await ChartStore._getStore(zone);
-        const allStoreDates = Object.keys(store?.dates||{});
-        const datesToTry = [dateStr];
-        if (fallback) {
-          const sorted = await ChartStore.getSortedDates(zone); // ascending
-          sorted.filter(d=>d<dateStr).reverse().slice(0,10).forEach(d=>datesToTry.push(d));
+    const scopeKey = scope.type === 'zone'   ? '__zone__'      :
+                     scope.type === 'region' ? scope.region    :
+                     scope.type === 'branch' ? scope.branchKey : null;
+    if (!scopeKey) return null;
+
+    const store = await ChartStore._getStore(zone);
+    const datesToTry = [dateStr];
+    if (fallback) {
+      const sorted = await ChartStore.getSortedDates(zone);
+      sorted.filter(d => d < dateStr).reverse().slice(0, 10)
+            .forEach(d => datesToTry.push(d));
+    }
+
+    // Diagnostic log for missing zone data
+    if (scope.type === 'zone') {
+      const entry = store?.dates?.[dateStr]?.['__zone__'];
+      if (!entry) {
+        const availScopes = store?.dates?.[dateStr]
+          ? Object.keys(store.dates[dateStr]) : [];
+        const storeCount = Object.keys(store?.dates || {}).length;
+        if (storeCount === 0) {
+          AppLog.add('DE', `getAgg: ChartStore empty — summary not loaded yet`, 'WARN',
+            `zone=${zone} dateStr=${dateStr}`);
+        } else {
+          AppLog.add('DE', `getAgg: no __zone__ for ${dateStr}`, 'WARN',
+            `storeDates=${storeCount} scopesOnDate=[${availScopes.join(',')}]`);
         }
-        // Diagnostic: log first zone-scope miss so we can see what's happening
-        if (scope.type==='zone' && allStoreDates.length === 0) {
-          AppLog.add('DE', `getAgg chartData: store empty for zone=${zone}`, 'WARN', `dateStr=${dateStr}`);
-        } else if (scope.type==='zone') {
-          const entry = store?.dates?.[dateStr]?.[scopeKey];
-          if (!entry) {
-            const availScopes = store?.dates?.[dateStr] ? Object.keys(store.dates[dateStr]) : [];
-            AppLog.add('DE', `getAgg chartData: missing __zone__ for ${dateStr}`, 'WARN',
-              `storeDates=${allStoreDates.length}, scopesOnDate=${availScopes.join(',')}`);
-          }
-        }
-        for (const td of datesToTry) {
-          const entry = store?.dates?.[td]?.[scopeKey];
-          if (entry && Object.keys(entry).length > 0) {
-            const values = { ...entry };
-            // Compute any derived params not already stored in summary
-            for (const dp of (Cfg.get('derivedParams')||[])) {
-              const dk = `__d__::${dp.name}`;
-              if (!(dk in values)) {
-                try {
-                  let val=null; let valid=true;
-                  for (const tok of dp.tokens) {
-                    const key=`${tok.sheet}::${tok.col}`;
-                    if(!(key in values)){valid=false;break;}
-                    const tv=values[key]??0;
-                    val=val===null?tv:(tok.op==='+'?val+tv:val-tv);
-                  }
-                  values[dk]=valid?val:null;
-                } catch(e){}
+      }
+    }
+
+    for (const td of datesToTry) {
+      const entry = store?.dates?.[td]?.[scopeKey];
+      if (entry && Object.keys(entry).length > 0) {
+        const values = { ...entry };
+        // Compute any derived params not already stored in summary
+        for (const dp of (Cfg.get('derivedParams') || [])) {
+          const dk = `__d__::${dp.name}`;
+          if (!(dk in values)) {
+            try {
+              let val = null; let valid = true;
+              for (const tok of dp.tokens) {
+                const key = `${tok.sheet}::${tok.col}`;
+                if (!(key in values)) { valid = false; break; }
+                const tv = values[key] ?? 0;
+                val = val === null ? tv : (tok.op === '+' ? val + tv : val - tv);
               }
-            }
-            const result={values,actual:td,isFB:td!==dateStr,rdMissing:false,bpMissing:false};
-            this._cache[ck]=result;
-            return result;
+              values[dk] = valid ? val : null;
+            } catch(e) {}
           }
         }
+        const result = { values, actual: td, isFB: td !== dateStr,
+                         rdMissing: false, bpMissing: false };
+        this._cache[ck] = result;
+        return result;
       }
     }
-    // ── end chartData fallback ───────────────────────────────────────────────
 
-    const sc=Cfg.get('sheets')||{};
-    const values={};
-    if(bpF){
-      for(const[sn,shc]of Object.entries(sc)){
-        if(shc.source!=='bp')continue; // include all BP sheets regardless of enabled
-        const sd=bpF.data.sheets[sn];if(!sd)continue;
-        const rows=this.filterBP(sd.rows,scope);
-        // FIX 1: Aggregate ALL columns (enabled or not) so disabled cols work in derived params
-        // The enabled flag only controls dashboard display, not computation
-        for(const col of Object.keys(shc.columns||{})){
-          values[`${sn}::${col}`]=this.agg(rows,col,Parser.isPct(col));
-        }
-      }
-    }
-    if(rdF){
-      for(const[sn,shc]of Object.entries(sc)){
-        if(shc.source!=='rd')continue; // include all RD sheets regardless of enabled
-        const sd=rdF.data.sheets[sn];if(!sd)continue;
-        const rows=this.filterRD(sd.rows,scope);
-        // FIX 1: Same — aggregate all columns so derived params can use disabled cols
-        for(const col of Object.keys(shc.columns||{})){
-          values[`${sn}::${col}`]=this.agg(rows,col,Parser.isPct(col));
-        }
-      }
-    }
-    for(const dp of(Cfg.get('derivedParams')||[])){
-      try{
-        let val=null;let valid=true;
-        for(const tok of dp.tokens){
-          const key=`${tok.sheet}::${tok.col}`;
-          // Key missing means column not in sheets config at all → skip param
-          if(!(key in values)){valid=false;break;}
-          // null means aggregated to nothing → treat as 0
-          const tv=values[key]??0;
-          val=val===null?tv:(tok.op==='+'?val+tv:val-tv);
-        }
-        values[`__d__::${dp.name}`]=valid?val:null;
-      }catch(e){}
-    }
-    const result={values,actual:bpF?bpF.actual:dateStr,isFB:bpF?bpF.isFB:false,rdMissing:!rdF,bpMissing:!bpF};
-    this._cache[ck]=result;
-    // Write to ChartStore for chart history
-    const zone=Cfg.get('activeZone');
-    if(zone&&Object.keys(values).length){
-      const scopeKey = scope.type==='zone' ? '__zone__' : scope.type==='region' ? scope.region : scope.type==='branch' ? scope.branchKey : null;
-      if(scopeKey && (scope.zone===zone))
-        ChartStore.writeDate(result.actual, zone, {[scopeKey]: values}).catch(()=>{});
-    }
-    return result;
+    return null;
   },
   async getAllRegions(dateStr, zone, fallback) {
     // Derive region list from RegionRegistry — no more RO column scanning.
@@ -4417,24 +4355,10 @@ const DE = {
           dateStr, { type: 'region', zone, region, dateStr }, fallback
         );
       }
-      // If live data returned nothing, fall back to ChartStore
-      const hasLiveData = Object.values(data).some(v => v !== null && !v.bpMissing);
-      if (!hasLiveData) {
-        const store = await ChartStore._getStore(zone);
-        const entry = store?.dates?.[dateStr];
-        if (entry) {
-          const storeRegions = Object.keys(entry)
-            .filter(k => k !== '__zone__')
-            .sort((a,b) => { if(a==='__ZO__')return -1; if(b==='__ZO__')return 1; return a.localeCompare(b); });
-          const storeData = {};
-          for (const r of storeRegions)
-            storeData[r] = await this.getAgg(dateStr, { type:'region', zone, region:r, dateStr }, false);
-          return { regions: storeRegions, data: storeData, actual: dateStr, isFB: false };
-        }
-        return null;
-      }
-      const bpF = await this.getBP(dateStr, fallback);
-      return { regions: scopeKeys, data, actual: bpF?.actual || dateStr, isFB: bpF?.isFB || false };
+      // Check if any scope returned data from ChartStore
+      const hasData = Object.values(data).some(v => v !== null);
+      if (!hasData) return null;
+      return { regions: scopeKeys, data, actual: dateStr, isFB: false };
     }
 
     // Setup not complete — fall back to ChartStore scope keys (summary data)
@@ -5419,11 +5343,14 @@ const Uploader = {
               };
               await DB.set('fileIndex', dk, newEntry);
 
-              // Extract aggregates and update summary
+              // Do NOT compute aggregates here. The uploaded file must go through
+              // _processOneDate during a proper Incremental Update to produce a
+              // complete scopeMap (__zone__ + all regions + branches).
+              // A partial single-scope write here would corrupt ChartStore for this date.
               if (zone && type === 'bp') {
-                DE._cache = {};
-                const agg = await DE.getAgg(dk, { type:'zone', zone, dateStr:dk }, false);
-                if (agg?.values) await ChartStore.writeDate(dk, zone, { '__zone__': agg.values });
+                AppLog.add('Drive API',
+                  `File uploaded — ${entry.name} queued for next Incremental Update`,
+                  'OK', `date=${dk} — run Incremental Update to rebuild this date`);
               }
             }
           } else {
@@ -5437,8 +5364,9 @@ const Uploader = {
       lbl.textContent = `Done — ${done} files uploaded`;
       status.textContent = `✓ Upload complete. ${done}/${toUpload.length} files uploaded to Drive.`;
 
-      // Push updated summary to Drive
-      await SummaryMgr.pushToDrive();
+      // Refresh file index and drive stats — do NOT push summary here.
+      // No aggregates were written so the summary is unchanged.
+      // The newly uploaded file will be included in the next Incremental Update.
       await FileIndex.buildFromDrive();
       await Admin.refreshDriveStats();
 
@@ -5606,7 +5534,23 @@ const BranchSummary = {
 
     const pick = (dates) => {
       const obj = {};
-      dates.forEach(d => { obj[d] = store.dates[d]; });
+      const corrupt = [];
+      dates.forEach(d => {
+        const entry = store.dates[d];
+        // Only include dates that have at least one branch key with values.
+        // Empty or zero-key entries are incomplete and must not reach Drive.
+        if (entry && Object.keys(entry).length > 0) {
+          obj[d] = entry;
+        } else {
+          corrupt.push(d);
+        }
+      });
+      if (corrupt.length) {
+        AppLog.add('BranchSummary',
+          `Excluded ${corrupt.length} empty date(s) from branch summary push`,
+          'WARN',
+          `Empty dates: ${corrupt.join(', ')} — run Incremental Update to rebuild`);
+      }
       return obj;
     };
 
@@ -5755,7 +5699,29 @@ const DataIntegrity = {
       }
 
       this._setStatus('syncing', `⟳ Updating ${toRebuild.length} date${toRebuild.length>1?'s':''}...`);
-      await this._incrementalRebuild(zone, toRebuild);
+
+      // ── Token check before rebuild — abort cleanly if not available ──
+      const rebuildToken = await GDrive.getToken(false).catch(() => null);
+      if (!rebuildToken) {
+        AppLog.add('DataIntegrity',
+          'Auto rebuild skipped — no OAuth token',
+          'WARN',
+          `${toRebuild.length} date(s) need updating but no valid token is available. ` +
+          `Sign in to Google and run Incremental Update to rebuild.`);
+        this._setStatus('warn', '⚠ Sign in required to update data');
+        return;
+      }
+
+      const rebuildResult = await this._incrementalRebuild(zone, toRebuild);
+
+      // If rebuild was aborted due to token failure — do not push, preserve existing summary
+      if (rebuildResult?.aborted) {
+        AppLog.add('DataIntegrity',
+          'Summary push skipped — rebuild was aborted',
+          'WARN',
+          'Existing Drive summary is preserved. Sign in and retry.');
+        return;
+      }
 
       // Step 5: Push updated summary to Drive (admin device only)
       await this._pushIfPossible(zone);
@@ -5997,38 +5963,104 @@ const DataIntegrity = {
 
   // ── Step 4: Incremental rebuild — parallel fetch, single atomic write ──
   async _incrementalRebuild(zone, items, onDateDone) {
-    // Cache sheet names once — same across all BP files
+
+    // ── Token pre-check — verify token is valid before touching any data ──
+    const token = await GDrive.getToken(false).catch(() => null);
+    if (!token) {
+      AppLog.add('DataIntegrity',
+        'Rebuild aborted — no OAuth token',
+        'ERR',
+        'Cannot fetch BP sheets without a valid Google token. Sign in and retry.');
+      this._setStatus('warn', '⚠ Sign in required to rebuild');
+      return { allResults: [], written: 0, aborted: true };
+    }
+
+    // ── Cache sheet names once — same across all BP files ──
     if (!this._sheetNameCache) {
       const firstEntry = await DB.get('fileIndex', items[0]?.dateStr);
       if (firstEntry?.bpSheetId) {
-        this._sheetNameCache = await SheetsAPI.getSheetNames(firstEntry.bpSheetId)
-          .catch(() => null);
+        const snResult = await SheetsAPI.getSheetNames(firstEntry.bpSheetId)
+          .catch(() => ({ names: [], error: 'exception' }));
+        this._sheetNameCache = snResult.names?.length ? snResult.names : null;
+
+        // If sheet name fetch itself fails with a token error — abort immediately
+        if (!this._sheetNameCache) {
+          const isTokenErr = snResult.error?.toLowerCase().includes('token') ||
+                             snResult.error?.toLowerCase().includes('oauth') ||
+                             snResult.error?.includes('401') ||
+                             snResult.error?.includes('403');
+          AppLog.add('DataIntegrity',
+            'Rebuild aborted — sheet name fetch failed',
+            'ERR',
+            isTokenErr
+              ? `Token invalid or expired: ${snResult.error}. Sign in and retry.`
+              : `Could not read sheet tabs: ${snResult.error}`);
+          this._setStatus('warn', '⚠ Rebuild aborted — sheet access failed');
+          return { allResults: [], written: 0, aborted: true };
+        }
       }
     }
 
-    const versions = await DB.get('config','summaryFileVersions') || {};
+    const versions = await DB.get('config', 'summaryFileVersions') || {};
     const allResults = []; // collect ALL scopeMaps in memory — no DB writes yet
     let processed = 0;
+    let tokenAborted = false;
 
-    // Parallel fetch in batches — no write race because writing is deferred
+    // ── Parallel fetch in batches — no write race because writing is deferred ──
     for (let i = 0; i < items.length; i += this._PARALLEL) {
       const batch = items.slice(i, i + this._PARALLEL);
       const batchResults = await Promise.all(
         batch.map(item => this._processOneDate(zone, item.dateStr, versions))
       );
+
+      // ── Mid-batch token failure detection ──
+      // If every date in this batch failed with a token/auth error,
+      // the token has expired mid-rebuild. Abort entirely — write nothing.
+      const tokenErrors = batchResults.filter(r =>
+        r.error && (
+          r.error.toLowerCase().includes('token') ||
+          r.error.toLowerCase().includes('oauth') ||
+          r.error.includes('401') ||
+          r.error.includes('403') ||
+          r.error === 'No OAuth token'
+        )
+      );
+      if (tokenErrors.length === batch.length) {
+        AppLog.add('DataIntegrity',
+          'Rebuild aborted mid-batch — token expired',
+          'ERR',
+          `All ${batch.length} date(s) in batch failed with token error: ` +
+          `${batchResults[0].error}. ` +
+          `Processed ${processed} of ${items.length} date(s) before abort. ` +
+          `No data written to ChartStore — existing summary is preserved. ` +
+          `Sign in again and retry rebuild.`);
+        this._setStatus('warn', '⚠ Rebuild aborted — token expired');
+        tokenAborted = true;
+        break; // stop processing further batches
+      }
+
       batchResults.forEach(r => {
         allResults.push(r);
-        if (onDateDone) onDateDone(r); // notify caller for UI log
+        if (onDateDone) onDateDone(r);
       });
       processed += batch.length;
       const remaining = items.length - processed;
       if (remaining > 0)
-        this._setStatus('syncing', `⟳ Updating ${remaining} date${remaining>1?'s':''}...`);
+        this._setStatus('syncing', `⟳ Updating ${remaining} date${remaining > 1 ? 's' : ''}...`);
       if (i + this._PARALLEL < items.length)
         await new Promise(r => setTimeout(r, 1000)); // 1s pause — quota safety
     }
 
-    // Single atomic write — all dates together, no race condition
+    // ── If token aborted mid-rebuild — write NOTHING, preserve existing data ──
+    if (tokenAborted) {
+      AppLog.add('DataIntegrity',
+        'ChartStore unchanged — rebuild aborted before write',
+        'WARN',
+        'Existing summary data is intact. No partial results were written.');
+      return { allResults, written: 0, aborted: true };
+    }
+
+    // ── Single atomic write — all dates together, no race condition ──
     const store = await ChartStore._getStore(zone);
     let written = 0;
     for (const r of allResults) {
@@ -6041,8 +6073,14 @@ const DataIntegrity = {
     if (written > 0) await ChartStore._setStore(zone, store);
 
     // Save updated versions
-    await DB.set('config','summaryFileVersions', versions);
-    return { allResults, written };
+    await DB.set('config', 'summaryFileVersions', versions);
+
+    AppLog.add('DataIntegrity',
+      `Incremental rebuild complete`,
+      'OK',
+      `${written} of ${items.length} date(s) written to ChartStore`);
+
+    return { allResults, written, aborted: false };
   },
 
   // Returns { dateStr, scopeMap, bpOk, rdOk, rdSkipped, error } — does NOT write to DB
@@ -6072,8 +6110,9 @@ const DataIntegrity = {
         AppLog.add('Schema', `BP schema check failed — ${dateStr}`, 'ERR', e.message));
 
       // Fetch RD if available
+      let rdData = null;
       if (entry.rdSheetId) {
-        const rdData = await SheetsAPI.buildRDFromSheet(entry.rdSheetId, dateStr, zone).catch(()=>null);
+        rdData = await SheetsAPI.buildRDFromSheet(entry.rdSheetId, dateStr, zone).catch(()=>null);
         if (rdData) {
           await DB.set('rdFiles', dateStr, rdData);
           result.rdOk = true;
@@ -6085,19 +6124,19 @@ const DataIntegrity = {
         result.rdSkipped = true;
       }
 
-      // Compute zone + region aggregates
-      DE._cache = {};
-      const zoneAgg = await DE.getAgg(dateStr, { type:'zone', zone, dateStr }, false);
-      if (zoneAgg?.values && Object.keys(zoneAgg.values).length)
-        result.scopeMap['__zone__'] = zoneAgg.values;
+      // ── Compute zone + region aggregates from already-fetched data ──
+      // computeAgg is a pure function — no Sheets API calls, no caching, no writes.
+      const zoneValues = DE.computeAgg(sheetData, rdData, { type: 'zone', zone, dateStr });
+      if (zoneValues && Object.keys(zoneValues).length)
+        result.scopeMap['__zone__'] = zoneValues;
 
-      const allRegions = await DE.getAllRegions(dateStr, zone, false).catch(()=>null);
-      if (allRegions?.regions) {
-        for (const rk of allRegions.regions) {
-          const rAgg = allRegions.data[rk];
-          if (rAgg?.values && Object.keys(rAgg.values).length)
-            result.scopeMap[rk] = rAgg.values;
-        }
+      const allRegionKeys = RegionRegistry.isSetupComplete(zone)
+        ? RegionRegistry.getActiveScopeKeys(dateStr, zone)
+        : [];
+      for (const rk of allRegionKeys) {
+        const rValues = DE.computeAgg(sheetData, rdData, { type: 'region', zone, region: rk, dateStr });
+        if (rValues && Object.keys(rValues).length)
+          result.scopeMap[rk] = rValues;
       }
 
       // ── New RO/Region detection ────────────────────────────────
@@ -6136,11 +6175,10 @@ const DataIntegrity = {
 
       // ── Compute branch aggregates and write to BranchChartStore ──
       try {
-        const bpData = await DB.get('bpFiles', dateStr);
-        if (bpData) {
-          // Collect all branch keys for this zone from the BP data
+        if (sheetData) {
+          // Collect all branch keys for this zone from the already-fetched BP data
           const allBranchKeys = new Set();
-          Object.values(bpData.sheets || {}).forEach(sheet => {
+          Object.values(sheetData.sheets || {}).forEach(sheet => {
             (sheet.rows || [])
               .filter(r => r['ZO'] === zone && r['BRANCH'])
               .forEach(r => allBranchKeys.add(r['BRANCH']));
@@ -6148,14 +6186,12 @@ const DataIntegrity = {
 
           if (allBranchKeys.size > 0) {
             const branchScopeMap = {};
-            DE._cache = {};
             for (const branchKey of allBranchKeys) {
-              try {
-                const bAgg = await DE.getAgg(dateStr, { type: 'branch', zone, branchKey, dateStr }, false);
-                if (bAgg?.values && Object.keys(bAgg.values).length) {
-                  branchScopeMap[branchKey] = bAgg.values;
-                }
-              } catch(be) { /* skip this branch on error */ }
+              const bValues = DE.computeAgg(sheetData, rdData,
+                { type: 'branch', zone, branchKey, dateStr });
+              if (bValues && Object.keys(bValues).length) {
+                branchScopeMap[branchKey] = bValues;
+              }
             }
             if (Object.keys(branchScopeMap).length) {
               await BranchChartStore.writeDate(dateStr, zone, branchScopeMap);
@@ -6265,10 +6301,24 @@ const DataIntegrity = {
     try {
       log('Starting Incremental Update — Zone: ' + zone, 'RUN');
 
-      // Step 1: Check OAuth token
-      const token = await GDrive.getToken(false).catch(() => null);
-      if (!token) { log('Not signed in to Google Drive — sign in first', 'ERR'); return; }
-      log('OAuth token valid', 'OK');
+      // Step 1: Check OAuth token — refresh interactively to reset full 1-hour validity
+      // This prevents token expiry mid-rebuild since user has explicitly clicked the button.
+      const existingToken = await GDrive.getToken(false).catch(() => null);
+      if (!existingToken) {
+        log('Not signed in to Google Drive — sign in first', 'ERR');
+        AppLog.add('DataIntegrity', 'Incremental Update aborted — no token', 'ERR',
+          'Sign in to Google Drive first then retry.');
+        return;
+      }
+      log('OAuth token found — refreshing to ensure full session validity...', 'RUN');
+      const freshToken = await GDrive.getToken(true).catch(() => null);
+      if (!freshToken) {
+        log('Token refresh cancelled or failed — aborting', 'ERR');
+        AppLog.add('DataIntegrity', 'Incremental Update aborted — token refresh failed', 'ERR',
+          'OAuth popup was dismissed or failed. Retry and complete the sign-in.');
+        return;
+      }
+      log(`OAuth token refreshed — valid for 1 hour from ${new Date().toLocaleTimeString()}`, 'OK');
       if (fillEl) fillEl.style.width = '15%';
 
       // Step 2: Sync file index from Drive (detect new/modified/deleted files)
@@ -6313,7 +6363,16 @@ const DataIntegrity = {
       if (fillEl) fillEl.style.width = '60%';
 
       // Step 5: Rebuild only the changed dates
-      await this._incrementalRebuild(zone, toRebuild);
+      const rebuildResult = await this._incrementalRebuild(zone, toRebuild);
+
+      // If aborted mid-rebuild due to token failure — stop, do not push
+      if (rebuildResult?.aborted) {
+        log('Rebuild aborted — token expired mid-rebuild. No data written. Sign in and retry.', 'ERR');
+        AppLog.add('DataIntegrity', 'Incremental Update aborted mid-rebuild', 'ERR',
+          'Token expired during processing. ChartStore and Drive summary are unchanged.');
+        return;
+      }
+
       log(`Updated ${toRebuild.length} date(s)`, 'OK');
       if (fillEl) fillEl.style.width = '85%';
 
@@ -6442,15 +6501,26 @@ const DataIntegrity = {
       }
       log('', 'GitHub', 'PAT available', 'OK');
 
-      // ── Step 1: Check OAuth token ─────────────────────────────
-      log('', 'Google OAuth', 'Checking authentication token', 'WAIT');
-      const token = await GDrive.getToken(false).catch(() => null);
-      if (!token) {
-        log('', 'Google OAuth', 'Token not available', 'ERR', 'Sign in to Google Drive first');
+      // ── Step 1: Check OAuth token — refresh interactively to reset full 1-hour validity ──
+      log('', 'Google OAuth', 'Checking authentication token', 'RUN');
+      const existingToken = await GDrive.getToken(false).catch(() => null);
+      if (!existingToken) {
+        log('', 'Google OAuth', 'Not signed in to Google Drive', 'ERR',
+          'Sign in to Google Drive first then retry Force Rebuild.');
         await finish(false, '⚠ Not signed in to Google. Sign in and try again.');
         return;
       }
-      log('', 'Google OAuth', 'Token valid', 'OK');
+      log('', 'Google OAuth', 'Token found — refreshing to ensure full session validity', 'RUN',
+        'This prevents token expiry mid-rebuild');
+      const freshToken = await GDrive.getToken(true).catch(() => null);
+      if (!freshToken) {
+        log('', 'Google OAuth', 'Token refresh cancelled or failed', 'ERR',
+          'OAuth popup was dismissed. Rebuild requires a valid token for the full duration.');
+        await finish(false, '⚠ Token refresh cancelled. Retry and complete sign-in.');
+        return;
+      }
+      log('', 'Google OAuth', 'Token refreshed successfully', 'OK',
+        `Valid for 1 hour from ${new Date().toLocaleTimeString()}`);
       setProgress(8, 'OAuth ✓');
 
       // ── Step 2: Clear existing data ───────────────────────────
@@ -6588,6 +6658,7 @@ const DataIntegrity = {
       const versions = await DB.get('config','summaryFileVersions') || {};
       const allResults = [];
       let processed = 0;
+      let tokenAborted = false;
 
       for (let i = 0; i < items.length; i += this._PARALLEL) {
         const batch = items.slice(i, i + this._PARALLEL);
@@ -6595,8 +6666,111 @@ const DataIntegrity = {
           batch.map(item => this._processOneDate(zone, item.dateStr, versions))
         );
 
+        // ── Mid-batch token failure detection ──
+        const tokenErrors = batchResults.filter(r =>
+          r.error && (
+            r.error.toLowerCase().includes('token') ||
+            r.error.toLowerCase().includes('oauth') ||
+            r.error.includes('401') ||
+            r.error.includes('403') ||
+            r.error === 'No OAuth token'
+          )
+        );
+        if (tokenErrors.length === batch.length) {
+          log('', 'Google OAuth', 'Token expired mid-rebuild — aborting', 'ERR',
+            `All ${batch.length} date(s) in batch failed: ${batchResults[0].error}. ` +
+            `Processed ${processed} of ${allDates.length} date(s) before abort.`);
+          AppLog.add('DataIntegrity',
+            'Force Rebuild aborted mid-batch — token expired',
+            'ERR',
+            `Token expired at batch starting index ${i}. ` +
+            `${processed} of ${allDates.length} date(s) processed. ` +
+            `No data written to ChartStore — existing summary is preserved. ` +
+            `Sign in again and retry Force Rebuild.`);
+          tokenAborted = true;
+          break;
+        }
+
         batchResults.forEach(r => {
           allResults.push(r);
+          processed++;
+          const pct = Math.round(20 + (processed / allDates.length) * 60);
+          setProgress(pct, `Processing ${processed}/${allDates.length}...`);
+
+          // Per-date log entries
+          if (r.error) {
+            log('', 'Sheets API', `${r.dateStr}`, 'ERR', r.error);
+          } else {
+            const rdStatus = r.rdSkipped ? 'no RD file' : r.rdOk ? 'RD ✓' : 'RD fetch failed';
+            const scopes = Object.keys(r.scopeMap).length;
+            log('', 'Sheets API', `${r.dateStr}`,
+              r.bpOk ? 'OK' : 'ERR',
+              `BP ✓ | ${rdStatus} | ${scopes} scope${scopes!==1?'s':''} aggregated`);
+          }
+        });
+
+        if (i + this._PARALLEL < items.length)
+          await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // ── If token aborted — write NOTHING, preserve existing data, stop ──
+      if (tokenAborted) {
+        log('', 'App', 'Force Rebuild aborted — ChartStore and Drive summary unchanged', 'ERR',
+          'No partial results written. Sign in again and retry Force Rebuild.');
+        await finish(false, '⚠ Rebuild aborted — token expired. Sign in and retry.');
+        return;
+      }
+
+      // ── Step 6: Single atomic write to IndexedDB ──────────────
+      log('', 'Local Storage', `Writing all ${allResults.length} dates atomically`, 'RUN');
+      setProgress(82, 'Writing to storage...');
+      const store = await ChartStore._getStore(zone);
+      let written = 0;
+      for (const r of allResults) {
+        if (r.scopeMap && Object.keys(r.scopeMap).length) {
+          if (!store.dates[r.dateStr]) store.dates[r.dateStr] = {};
+          Object.assign(store.dates[r.dateStr], r.scopeMap);
+          written++;
+        }
+      }
+      if (written > 0) await ChartStore._setStore(zone, store);
+      await DB.set('config','summaryFileVersions', versions);
+      log('', 'Local Storage', 'Write complete', 'OK', `${written} dates written`);
+      setProgress(88, `${written} dates written ✓`);
+
+      // ── Step 7: Build and push summary chunks to Drive ────────
+      log('', 'Drive API', 'Pushing summary files to Drive', 'RUN');
+      setProgress(90, 'Pushing to Drive...');
+      try {
+        await SummaryMgr.pushToDriveWithVersions(zone);
+        await DB.set('config','summaryLastUpdated', Date.now());
+        log('', 'Drive API', 'Summary files uploaded and made public', 'OK',
+          'BP_SUMMARY_META.json + BP_SUMMARY_RECENT.json (publicly readable)');
+        setProgress(98, 'Summary pushed ✓');
+      } catch(e) {
+        log('', 'Drive API', 'Push failed', 'ERR', e.message);
+        log('', 'App', 'Data saved locally — push can be retried', 'WARN');
+        setProgress(95, 'Local save OK, Drive push failed');
+      }
+
+      // ── Done ──────────────────────────────────────────────────
+      const finalDates = await ChartStore.getSortedDates(zone);
+      const failed = allResults.filter(r => r.error || !r.bpOk).length;
+      const summary = `${finalDates.length} dates in chart data` +
+        (failed ? `, ${failed} date(s) skipped` : '') +
+        (finalDates.length ? `. Range: ${finalDates[0]} → ${finalDates[finalDates.length-1]}` : '');
+      log('', 'App', 'Force Rebuild complete', 'OK', summary);
+      setProgress(100, 'Complete ✓');
+      await finish(true, `✓ ${summary}`);
+      this._refreshVisibleChart();
+
+    } catch(e) {
+      log('', 'App', 'Unexpected error', 'ERR', e.message);
+      console.error('forceRebuild error:', e);
+      await finish(false, `✗ Rebuild failed: ${e.message}`);
+    }
+  }
+};
           processed++;
           const pct = Math.round(20 + (processed / allDates.length) * 60);
           setProgress(pct, `Processing ${processed}/${allDates.length}...`);
