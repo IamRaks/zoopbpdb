@@ -5414,81 +5414,292 @@ const SummaryMgr = {
 
   async _findFile(token, folderId, name) {
     const q = encodeURIComponent(`name='${name}' and '${folderId}' in parents and trashed=false`);
+    AppLog.add('Drive API', `_findFile: searching for "${name}"`, 'RUN',
+      `folderId=${folderId?.substring(0,12)}`);
     const r = await fetch(
       `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,modifiedTime)`,
       { headers:{ Authorization:`Bearer ${token}` } }
     );
-    if (!r.ok) return null;
-    return ((await r.json()).files||[])[0] || null;
+    if (!r.ok) {
+      AppLog.add('Drive API', `_findFile: search failed for "${name}"`, 'ERR',
+        `HTTP ${r.status}`);
+      return null;
+    }
+    const found = ((await r.json()).files||[])[0] || null;
+    AppLog.add('Drive API', `_findFile: "${name}"`, found ? 'OK' : 'INF',
+      found
+        ? `Found — id=${found.id?.substring(0,12)} modifiedTime=${found.modifiedTime}`
+        : 'Not found — will create new file (POST)');
+    return found;
   },
 
   async _uploadFile(token, folderId, name, content, existingId) {
+    const isNew = !existingId;
+    const method = isNew ? 'POST' : 'PATCH';
+    const contentJson = JSON.stringify(content);
+    const contentBytes = new TextEncoder().encode(contentJson).length;
+    AppLog.add('Drive API', `_uploadFile: ${method} "${name}"`, 'RUN',
+      `existingId=${existingId?.substring(0,12)||'null'} | ` +
+      `size=${(contentBytes/1024).toFixed(1)}KB | ` +
+      `dates=${Object.keys(content.dates||{}).length} | ` +
+      `action=${isNew ? 'CREATE NEW FILE' : 'UPDATE IN PLACE'}`);
+
     const form = new FormData();
     const metaStr = existingId ? '{}' : `{"name":"${name}","parents":["${folderId}"]}`;
     form.append('metadata', new Blob([metaStr], {type:'application/json'}));
-    form.append('file', new Blob([JSON.stringify(content)], {type:'application/json'}));
+    form.append('file', new Blob([contentJson], {type:'application/json'}));
     const url = existingId
       ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart`
       : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
-    const r = await fetch(url, { method: existingId?'PATCH':'POST', headers:{Authorization:`Bearer ${token}`}, body:form });
-    if (!r.ok) throw new Error(`Upload ${name}: ${r.status}`);
-    return (await r.json()).id;
+    const t0 = Date.now();
+    const r = await fetch(url, { method, headers:{Authorization:`Bearer ${token}`}, body:form });
+    const ms = Date.now() - t0;
+    if (!r.ok) {
+      AppLog.add('Drive API', `_uploadFile: FAILED "${name}"`, 'ERR',
+        `HTTP ${r.status} | method=${method} | ${ms}ms | ` +
+        `existingId=${existingId?.substring(0,12)||'null'}`);
+      throw new Error(`Upload ${name}: ${r.status}`);
+    }
+    const resp = await r.json();
+    const newId = resp.id;
+    AppLog.add('Drive API', `_uploadFile: SUCCESS "${name}"`, 'OK',
+      `newId=${newId?.substring(0,12)} | ` +
+      `${isNew ? 'NEW FILE CREATED' : 'UPDATED IN PLACE'} | ` +
+      `idChanged=${isNew ? 'YES (was null)' : (newId !== existingId ? 'YES — UNEXPECTED' : 'NO')} | ` +
+      `${ms}ms | ${(contentBytes/1024).toFixed(1)}KB uploaded`);
+    return newId;
   },
 
   async pushToDrive(zone, fileVersions) {
     zone = zone || Cfg.get('activeZone'); if (!zone) return;
-    const folderId = await this._folderId(); if (!folderId) return;
-    const token = await GDrive.getToken(false).catch(()=>null); if (!token) return;
-    const store = await ChartStore._getStore(zone); if (!store?.dates) return;
-    const fv = fileVersions || await DB.get('config','summaryFileVersions') || {};
-    const chunks = ChartStore.buildChunks(zone, store, fv);
+    AppLog.add('Summary', '══ pushToDrive START ══', 'RUN', `zone=${zone}`);
 
-    // Cache existing file IDs
+    // ── Preflight checks ─────────────────────────────────────────
+    const folderId = await this._folderId();
+    if (!folderId) {
+      AppLog.add('Summary', 'pushToDrive aborted — no Drive folder ID', 'ERR',
+        'gBpFolderId not configured or parent folder not found');
+      return;
+    }
+    AppLog.add('Summary', 'Drive folder resolved', 'OK', `folderId=${folderId?.substring(0,12)}`);
+
+    const token = await GDrive.getToken(false).catch(()=>null);
+    if (!token) {
+      AppLog.add('Summary', 'pushToDrive aborted — no OAuth token', 'ERR',
+        'Sign in to Google Drive first');
+      return;
+    }
+    AppLog.add('Summary', 'OAuth token available', 'OK',
+      `expiry=${new Date(GDrive.tokenExpiry).toLocaleTimeString()}`);
+
+    const store = await ChartStore._getStore(zone);
+    if (!store?.dates) {
+      AppLog.add('Summary', 'pushToDrive aborted — ChartStore empty', 'ERR',
+        `zone=${zone} — run Force Rebuild first`);
+      return;
+    }
+    const allStoreDates = Object.keys(store.dates);
+    const zoneOkDates   = allStoreDates.filter(d => store.dates[d]?.['__zone__']);
+    AppLog.add('Summary', 'ChartStore state', 'OK',
+      `totalDates=${allStoreDates.length} | withZone=${zoneOkDates.length} | ` +
+      `withoutZone=${allStoreDates.length - zoneOkDates.length} | ` +
+      `range=${allStoreDates.sort()[0]} → ${allStoreDates.sort().slice(-1)[0]}`);
+
+    const fv = fileVersions || await DB.get('config','summaryFileVersions') || {};
+
+    // ── Level 1 Verification: build chunks and compare with ChartStore ───
+    AppLog.add('Summary', 'Building summary chunks from ChartStore', 'RUN');
+    const chunks = ChartStore.buildChunks(zone, store, fv);
+    const recentDates  = Object.keys(chunks.recent?.dates  || {});
+    const historyDates = Object.keys(chunks.history?.dates || {});
+    const totalChunkDates = recentDates.length + historyDates.length;
+    const excluded = zoneOkDates.length - totalChunkDates;
+    AppLog.add('Summary', 'Level 1 verification — chunk vs ChartStore', 
+      excluded === 0 ? 'OK' : 'WARN',
+      `ChartStore(withZone)=${zoneOkDates.length} | ` +
+      `chunks.recent=${recentDates.length} | ` +
+      `chunks.history=${historyDates.length} | ` +
+      `total=${totalChunkDates} | ` +
+      `excluded=${excluded} | ` +
+      `recentRange=${recentDates.sort()[0]||'none'} → ${recentDates.sort().slice(-1)[0]||'none'} | ` +
+      `historyRange=${historyDates.sort()[0]||'none'} → ${historyDates.sort().slice(-1)[0]||'none'} | ` +
+      `pinnedDates=${chunks.meta.pinnedDates?.join(', ')||'none'}`);
+    if (excluded > 0) {
+      AppLog.add('Summary', `${excluded} date(s) excluded by __zone__ guard`, 'WARN',
+        'These dates have no zone aggregate — they were skipped during rebuild. ' +
+        'Run Incremental Update to fix.');
+    }
+
+    // ── Locate existing files on Drive ───────────────────────────
+    AppLog.add('Summary', 'Locating existing summary files on Drive', 'RUN',
+      `FILES=${Object.values(this.FILES).join(', ')}`);
     for (const [key, name] of Object.entries(this.FILES)) {
       if (!this._ids[key]) {
         const f = await this._findFile(token, folderId, name);
         if (f) this._ids[key] = f.id;
+      } else {
+        AppLog.add('Drive API', `Using cached id for "${name}"`, 'INF',
+          `id=${this._ids[key]?.substring(0,12)}`);
       }
     }
+    AppLog.add('Summary', 'File ID state before upload', 'INF',
+      `meta=${this._ids.meta?.substring(0,12)||'null(new)'} | ` +
+      `recent=${this._ids.recent?.substring(0,12)||'null(new)'} | ` +
+      `history=${this._ids.history?.substring(0,12)||'null(new)'}`);
 
-    // Upload chunks
+    // ── Upload chunks to Drive ────────────────────────────────────
+    AppLog.add('Summary', 'Uploading chunks to Drive', 'RUN');
     this._ids.meta   = await this._uploadFile(token, folderId, this.FILES.meta,   chunks.meta,   this._ids.meta||null);
     this._ids.recent = await this._uploadFile(token, folderId, this.FILES.recent, chunks.recent, this._ids.recent||null);
     if (chunks.history)
       this._ids.history = await this._uploadFile(token, folderId, this.FILES.history, chunks.history, this._ids.history||null);
+    AppLog.add('Summary', 'All chunks uploaded to Drive', 'OK',
+      `meta=${this._ids.meta?.substring(0,12)} | ` +
+      `recent=${this._ids.recent?.substring(0,12)} | ` +
+      `history=${this._ids.history?.substring(0,12)||'none'}`);
 
-    // Make summary files publicly readable (anyone with link)
-    const makePublic = async (fileId) => {
+    // ── Make files publicly readable ─────────────────────────────
+    AppLog.add('Summary', 'Setting public read permissions', 'RUN');
+    const makePublic = async (fileId, label) => {
       if (!fileId) return;
-      await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'reader', type: 'anyone' })
-      }).catch(() => {}); // non-fatal if this fails
+      const pr = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}/permissions`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'reader', type: 'anyone' })
+        }
+      ).catch(e => ({ ok: false, _err: e.message }));
+      const ok = pr.ok !== false;
+      AppLog.add('Drive API', `makePublic: "${label}"`, ok ? 'OK' : 'WARN',
+        ok
+          ? `fileId=${fileId?.substring(0,12)} — publicly readable`
+          : `fileId=${fileId?.substring(0,12)} — FAILED: ${pr._err||'HTTP error'} — users may get 403`);
     };
-    await makePublic(this._ids.meta);
-    await makePublic(this._ids.recent);
-    if (this._ids.history) await makePublic(this._ids.history);
+    await makePublic(this._ids.meta,    'BP_SUMMARY_META.json');
+    await makePublic(this._ids.recent,  'BP_SUMMARY_RECENT.json');
+    await makePublic(this._ids.history, 'BP_SUMMARY_HISTORY.json');
 
-    // Save file IDs to config so all devices know public URLs without OAuth
-    const ids = {
+    // ── Pessimistic: set summaryFileIds to null before GitHub push ────────
+    // IndexedDB will only receive the confirmed file ID AFTER GitHub confirms.
+    // This guarantees: non-null ID in IndexedDB = ID confirmed in GitHub.
+    // If GitHub push fails, IndexedDB stays null — devices fall back to GitHub
+    // for last confirmed ID, which is the correct safe behaviour.
+    const previousIds = Cfg.get('summaryFileIds') || {};
+    AppLog.add('Summary', 'Setting summaryFileIds → null (pessimistic pre-push)', 'RUN',
+      `previousIds: meta=${previousIds.meta?.substring(0,12)||'null'} | ` +
+      `recent=${previousIds.recent?.substring(0,12)||'null'} | ` +
+      `history=${previousIds.history?.substring(0,12)||'null'} | ` +
+      `newIds (pending GitHub confirm): recent=${this._ids.recent?.substring(0,12)}`);
+    Cfg.set('summaryFileIds', { meta: null, recent: null, history: null,
+      branchMeta: previousIds.branchMeta||null,
+      branchRecent: previousIds.branchRecent||null,
+      branchHistory: previousIds.branchHistory||null });
+    await Cfg.save();
+
+    // ── Push file IDs to GitHub ───────────────────────────────────
+    // Temporarily set the new IDs in Cfg so ConfigSync.push() includes them
+    Cfg.set('summaryFileIds', {
       meta:    this._ids.meta    || null,
       recent:  this._ids.recent  || null,
       history: this._ids.history || null,
-    };
-    Cfg.set('summaryFileIds', ids);
-    await Cfg.save();
-    // Push updated config to GitHub — includes summaryFileIds, fileIndexSheetIds, activeZoneRegions
-    AppLog.add('GitHub', 'Saving summary file IDs to config', 'RUN',
-      `recent=${ids.recent?.substring(0,12)||'null'} history=${ids.history?.substring(0,12)||'null'}`);
+      branchMeta:    previousIds.branchMeta    || null,
+      branchRecent:  previousIds.branchRecent  || null,
+      branchHistory: previousIds.branchHistory || null,
+    });
+    AppLog.add('GitHub', 'Pushing summary file IDs to config.json', 'RUN',
+      `meta=${this._ids.meta?.substring(0,12)} | ` +
+      `recent=${this._ids.recent?.substring(0,12)} | ` +
+      `history=${this._ids.history?.substring(0,12)||'null'}`);
     const pushed = await ConfigSync.push(true);
+
     if (pushed) {
-      AppLog.add('GitHub', 'Saving summary file IDs to config', 'OK',
-        'All devices will use public URLs on next load');
+      // ── GitHub confirmed — now write IDs to IndexedDB ─────────
+      const confirmedIds = {
+        meta:    this._ids.meta    || null,
+        recent:  this._ids.recent  || null,
+        history: this._ids.history || null,
+        branchMeta:    previousIds.branchMeta    || null,
+        branchRecent:  previousIds.branchRecent  || null,
+        branchHistory: previousIds.branchHistory || null,
+      };
+      Cfg.set('summaryFileIds', confirmedIds);
+      await Cfg.save();
+      AppLog.add('GitHub', 'GitHub push confirmed — summaryFileIds saved to IndexedDB', 'OK',
+        `meta=${confirmedIds.meta?.substring(0,12)} | ` +
+        `recent=${confirmedIds.recent?.substring(0,12)} | ` +
+        `history=${confirmedIds.history?.substring(0,12)||'null'} | ` +
+        'All devices will load correct summary on next page load');
+    } else {
+      // ── GitHub failed — revert IndexedDB to null ──────────────
+      Cfg.set('summaryFileIds', { meta: null, recent: null, history: null,
+        branchMeta: previousIds.branchMeta||null,
+        branchRecent: previousIds.branchRecent||null,
+        branchHistory: previousIds.branchHistory||null });
+      await Cfg.save();
+      AppLog.add('GitHub', 'GitHub push FAILED — summaryFileIds remains null in IndexedDB', 'ERR',
+        `Drive upload succeeded (recent=${this._ids.recent?.substring(0,12)}) ` +
+        `but GitHub config was not updated. ` +
+        `Other devices cannot discover the new summary. ` +
+        `Admin: retry push from Admin → Config → Push to GitHub.`);
     }
-    // else: ConfigSync.push already logged the error
+
+    // ── Level 3 Verification: public URL accessibility ───────────
+    // Fetch the just-uploaded summary using the exact public URL that users will use.
+    // This confirms: file is on Drive + publicly readable + API key works + content valid.
+    if (pushed && this._ids.recent) {
+      AppLog.add('Summary', 'Level 3 verification — testing public URL', 'RUN',
+        `fileId=${this._ids.recent?.substring(0,12)}`);
+      try {
+        const apiKey = Cfg.get('gApiKey') || '';
+        if (!apiKey) {
+          AppLog.add('Summary', 'Level 3 verification skipped — no API key configured', 'WARN',
+            'Set gApiKey in Admin → Config to enable public access verification');
+        } else {
+          const verUrl = `https://www.googleapis.com/drive/v3/files/${this._ids.recent}?alt=media&key=${apiKey}`;
+          const t0 = Date.now();
+          const vr = await fetch(verUrl);
+          const ms = Date.now() - t0;
+          if (!vr.ok) {
+            AppLog.add('Summary', 'Level 3 verification FAILED — public URL not accessible', 'ERR',
+              `HTTP ${vr.status} | fileId=${this._ids.recent?.substring(0,12)} | ${ms}ms | ` +
+              (vr.status === 403
+                ? 'File not publicly readable — makePublic may have failed. Users will get 403.'
+                : vr.status === 404
+                  ? 'File not found — Drive may not have propagated yet. Retry in 30s.'
+                  : `Unexpected error — users cannot load summary`));
+          } else {
+            const verText = await vr.text();
+            let verDates = 0, verOk = false;
+            try {
+              const verJson = JSON.parse(verText);
+              verDates = Object.keys(verJson.dates||{}).length;
+              verOk = verDates > 0;
+            } catch(pe) { /* JSON parse failed */ }
+            AppLog.add('Summary', 
+              verOk ? 'Level 3 verification PASSED' : 'Level 3 verification WARNING — empty dates',
+              verOk ? 'OK' : 'WARN',
+              `HTTP ${vr.status} | ${ms}ms | ` +
+              `publicDates=${verDates} | chunkDates=${recentDates.length} | ` +
+              `match=${verDates === recentDates.length ? 'YES ✓' : 'NO — mismatch'} | ` +
+              `size=${(verText.length/1024).toFixed(1)}KB | ` +
+              `publicUrl=...${this._ids.recent?.substring(0,12)}?alt=media&key=AIza...`);
+          }
+        }
+      } catch(ve) {
+        AppLog.add('Summary', 'Level 3 verification error', 'ERR',
+          `${ve.message} — could not confirm public accessibility`);
+      }
+    } else if (!pushed) {
+      AppLog.add('Summary', 'Level 3 verification skipped — GitHub push failed', 'WARN',
+        'No point verifying public access if config was not propagated');
+    }
 
     await DB.set('config','summaryLastUpdated', Date.now());
+    AppLog.add('Summary', '══ pushToDrive COMPLETE ══', pushed ? 'OK' : 'WARN',
+      `zone=${zone} | ` +
+      `driveOK=true | githubOK=${pushed} | ` +
+      `summaryFileIds.recent=${pushed ? this._ids.recent?.substring(0,12) : 'null(GitHub failed)'}`);
   },
 
   async pushToDriveWithVersions(zone) {
@@ -10526,11 +10737,19 @@ const App = {
 
   // Show no-summary state: keep landing page visible, swap status bar for Admin+Log buttons
   showNoSummary() {
+    // Stop spinner and clear "Initialising..." text first
+    const spin = document.getElementById('landingSpin');
+    if (spin) spin.style.display = 'none';
+    const stTxt = document.getElementById('landingStatusTxt');
+    if (stTxt) stTxt.textContent = '';
+
+    // Replace status area with admin prompt
     const st = document.getElementById('landingStatus');
     if (st) {
       st.innerHTML = `
-        <div style="display:flex;flex-direction:column;gap:6px;width:100%;padding:4px 0">
-          <span style="font-size:12px;color:var(--text3)">⚠️ Dashboard data not available — contact your Administrator</span>
+        <div style="display:flex;flex-direction:column;gap:8px;width:100%;padding:6px 0">
+          <span style="font-size:13px;font-weight:600;color:var(--neg,#f85149)">⚠️ Dashboard data not available</span>
+          <span style="font-size:11px;color:var(--text3)">Summary not configured or not yet built. Contact your Administrator.</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn-s" onclick="App.openAdminPrompt()">⚙ Admin Login</button>
             <button class="btn-s" style="background:var(--bg3)" onclick="App.showActivityLog()">📋 View Activity Log</button>
@@ -10581,21 +10800,29 @@ const App = {
     }
     AppLog.add('App', 'Starting up', 'RUN', navigator.userAgent.substring(0,60));
 
+    // Config MUST be awaited before reading summaryFileIds.
+    // summaryFileIds lives in config.json on GitHub. If local IndexedDB has an
+    // old or empty config (new device, cleared browser data), summaryFileIds will
+    // be null unless we wait for GitHub to respond first.
+    // A 6s timeout ensures we don't block forever on a slow/unreachable GitHub.
     AppLog.add('GitHub', 'Loading config.json', 'RUN');
-    // Fire-and-forget: load config in background without blocking app startup.
-    // Config is optional — if GitHub is slow or unreachable, the dashboard
-    // still loads from cached config in IndexedDB. Remote config sync happens
-    // silently in the background during normal use.
-    ConfigSync.autoLoad()
-      .then(cfgUpdated => {
-        if (cfgUpdated) {
-          Cfg.load().catch(e => console.warn('Reload after GitHub config:', e));
-          AppLog.add('GitHub', 'Config loaded and applied', 'OK');
-        } else {
-          AppLog.add('GitHub', 'Config up to date (no change)', 'INF');
-        }
-      })
-      .catch(e => console.warn('Config auto-load failed:', e.message));
+    this.showLanding('Checking for latest config...', 8);
+    try {
+      const cfgUpdated = await Promise.race([
+        ConfigSync.autoLoad(),
+        new Promise(res => setTimeout(() => res(false), 6000))
+      ]);
+      if (cfgUpdated) {
+        await Cfg.load();
+        AppLog.add('GitHub', 'Config loaded and applied from GitHub', 'OK',
+          `summaryFileIds.recent=${(Cfg.get('summaryFileIds')||{}).recent?.substring(0,12)||'null'}`);
+      } else {
+        AppLog.add('GitHub', 'Config up to date or timed out — using cached config', 'INF',
+          `summaryFileIds.recent=${(Cfg.get('summaryFileIds')||{}).recent?.substring(0,12)||'null'}`);
+      }
+    } catch(e) {
+      AppLog.add('GitHub', 'Config load failed — using cached config', 'WARN', e.message);
+    }
 
     // Handle password reset link
     const urlParams = new URLSearchParams(window.location.search);
@@ -10647,6 +10874,12 @@ const App = {
     let summaryLoaded = false;
     AppLog.add('Summary', 'Checking summaryFileIds in config', summaryIds.recent ? 'OK' : 'WARN',
       summaryIds.recent ? 'IDs found — attempting public download' : 'No summaryFileIds in config — summary never built or config not synced');
+
+    if (!summaryIds.recent) {
+      // Config has not synced from GitHub yet OR summary was never built.
+      // Show a specific status so the user doesn't see "Initialising..." frozen.
+      this.showLanding('⚠ Summary not configured — contact Admin', 100);
+    }
 
     if (summaryIds.recent) {
       AppLog.add('Summary', 'Fetching BP_SUMMARY_RECENT.json publicly', 'RUN', summaryIds.recent);
