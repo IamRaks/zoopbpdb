@@ -715,9 +715,9 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-06-01T17:24:26.152Z",
+  "_savedAt": "2026-06-02T02:29:04.598Z",
   "bpSchema": {
-    "sourceDate": "2026-05-22",
+    "sourceDate": "2026-05-24",
     "ros": [
       "35130-ERNAKULAM",
       "36750-THIRUVANANTHAPURAM",
@@ -767,7 +767,7 @@
       "Total Advance (Core)::Union Mortgage",
       "Total Advance (Core)::Union Personal"
     ],
-    "setAt": "2026-06-01T09:00:58.337Z"
+    "setAt": "2026-06-02T02:27:56.334Z"
   },
   "rdSchema": {
     "sourceDate": "2026-05-24",
@@ -793,7 +793,7 @@
         "TDA COUNT"
       ]
     },
-    "setAt": "2026-06-01T09:01:00.237Z"
+    "setAt": "2026-06-02T02:27:58.534Z"
   },
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
