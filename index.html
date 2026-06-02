@@ -463,7 +463,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 
 <div id="mainArea">
   <!-- LANDING PAGE -->
-  <div id="landingPage" style="display:flex">
+  <div id="landingPage" style="display:none">
     <div class="carousel" id="carousel">
       <!-- slides injected by Carousel.init() -->
       <button class="carousel-arrow prev" onclick="Carousel.prev()">&#8249;</button>
@@ -546,7 +546,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <button class="btn-s" style="margin-top:8px;background:var(--bg3)" onclick="App.showActivityLog()">📋 View Activity Log</button>
   </div>
 
-  <div id="dashWrap" style="display:none">
+  <div id="dashWrap" style="display:block">
     <div class="period-bar" id="periodBar"></div>
     <div class="tab-bar" id="tabBar">
       <button class="tab-btn active" data-tab="zone">🏛 Zone</button>
@@ -10734,8 +10734,15 @@ const AppLog = {
 // ================================================================
 const App = {
   showLanding(statusTxt, progPct) {
-    // Only update progress bar and spinner — never touch visibility of any element.
-    // The landing page stays steady; only the thin progress bar and status text change.
+    // Landing page starts hidden by default (dashboard loads directly).
+    // showLanding is only called for error/no-summary/no-zone states —
+    // make landing visible and dashboard hidden when called.
+    const lp = document.getElementById('landingPage');
+    const dw = document.getElementById('dashWrap');
+    if (lp && lp.style.display === 'none') {
+      lp.style.display = 'flex';
+      if (dw) dw.style.display = 'none';
+    }
     const st = document.getElementById('landingStatusTxt');
     const pf = document.getElementById('landingProgFill');
     const sp = document.getElementById('landingSpin');
@@ -10749,6 +10756,11 @@ const App = {
 
   // Show no-summary state: keep landing page visible, swap status bar for Admin+Log buttons
   showNoSummary() {
+    // Ensure landing page is visible (it starts hidden by default)
+    const lp = document.getElementById('landingPage');
+    const dw = document.getElementById('dashWrap');
+    if (lp) lp.style.display = 'flex';
+    if (dw) dw.style.display = 'none';
     // Stop spinner and clear "Initialising..." text first
     const spin = document.getElementById('landingSpin');
     if (spin) spin.style.display = 'none';
@@ -10782,16 +10794,10 @@ const App = {
 
   hideLanding() {
     const lp = document.getElementById('landingPage');
+    if (lp) lp.style.display = 'none';
     const dw = document.getElementById('dashWrap');
-    if (!lp) return;
-    dw.style.display = 'block';
-    lp.classList.add('fade-out');
-    setTimeout(() => {
-      lp.style.display = 'none';
-      lp.classList.remove('fade-out');
-      dw.classList.add('fade-in');
-      Carousel.stop();
-    }, 620);
+    if (dw) dw.style.display = 'block';
+    Carousel.stop();
   },
 
   async init(){
@@ -10825,7 +10831,7 @@ const App = {
     // be null unless we wait for GitHub to respond first.
     // A 6s timeout ensures we don't block forever on a slow/unreachable GitHub.
     AppLog.add('GitHub', 'Loading config.json', 'RUN');
-    this.showLanding('Checking for latest config...', 8);
+    // this.showLanding('Checking for latest config...', 8); — removed, landing hidden by default
     try {
       const cfgUpdated = await Promise.race([
         ConfigSync.autoLoad(),
@@ -10876,7 +10882,7 @@ const App = {
     // The carousel is decorative; a slow or failed GitHub fetch must not
     // freeze the dashboard. The fallback branded slide renders immediately
     // from local HTML if the fetch doesn't resolve in time.
-    this.showLanding('Loading...', 5);
+    // this.showLanding('Loading...', 5); — removed, landing hidden by default
     Carousel.init().catch(e => console.warn('Carousel init failed:', e.message));
 
     // No zone configured at all — show setup prompt
@@ -10888,7 +10894,7 @@ const App = {
     }
 
     // ── Step 2: Try public summary download (no auth needed) ──
-    this.showLanding('Loading dashboard data...', 20);
+    // Note: landing page is hidden by default — no showLanding needed here
     const summaryIds = Cfg.get('summaryFileIds') || {};
     let summaryLoaded = false;
     AppLog.add('Summary', 'Checking summaryFileIds in config', summaryIds.recent ? 'OK' : 'WARN',
@@ -10941,7 +10947,7 @@ const App = {
           summaryLoaded = true;
           DataIntegrity._lastSummaryFetch = Date.now();
           AppLog.add('Summary', 'Merged into IndexedDB', 'OK', Object.keys(chunk.dates).length + ' dates');
-          this.showLanding('Preparing dashboard...', 60);
+          // this.showLanding('Preparing dashboard...', 60); — removed, landing hidden by default
           // Download history in background
           if (summaryIds.history) {
             // Unauthenticated public request — no Authorization header
@@ -10986,7 +10992,7 @@ const App = {
       if (store?.dates && Object.keys(store.dates).length > 0) {
         summaryLoaded = true;
         AppLog.add('App', 'Using local IndexedDB cache', 'OK', Object.keys(store.dates).length + ' dates cached');
-        this.showLanding('Loading from cache...', 60);
+        // this.showLanding('Loading from cache...', 60); — removed, landing hidden by default
       } else {
         AppLog.add('App', 'IndexedDB cache empty', 'WARN');
       }
@@ -10998,7 +11004,7 @@ const App = {
       if (dates.length) {
         summaryLoaded = true;
         AppLog.add('App', 'Using local bpFiles cache', 'OK', dates.length + ' files');
-        this.showLanding('Loading from local files...', 60);
+        // this.showLanding('Loading from local files...', 60); — removed, landing hidden by default
       } else {
         AppLog.add('App', 'No local bpFiles either', 'WARN');
       }
@@ -11016,7 +11022,6 @@ const App = {
     }
 
     // ── Step 6: Load and show dashboard ───────────────────────
-    this.showLanding('Opening dashboard...', 85);
     try {
       const indexedDates = await DB.keys('fileIndex');
       const bpDates = await FM.availDates('bp');
@@ -11028,8 +11033,7 @@ const App = {
       await Dashboard.init();
     } catch(e) { console.warn('Dashboard init error:', e); }
 
-    this.showLanding('Dashboard ready!', 100);
-    await new Promise(r => setTimeout(r, 350));
+    // Dashboard is already visible — just ensure landing is hidden
     this.hideLanding();
 
     // ── Step 7: Background sync (token-gated, silent) ─────────
