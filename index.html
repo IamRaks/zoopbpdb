@@ -2016,11 +2016,16 @@ const ConfigSync = {
   async autoLoad() {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
+      const timeout = setTimeout(() => controller.abort(), 5000);
       const resp = await fetch(this.CONFIG_URL + '?t=' + Date.now(), { signal: controller.signal });
       clearTimeout(timeout);
       if (!resp.ok) return false;
-      const cfg = await resp.json();
+      // Race body read against a 4s timeout to prevent hanging on slow GitHub streams
+      const text = await Promise.race([
+        resp.text(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('GitHub body timeout')), 4000))
+      ]);
+      const cfg = JSON.parse(text);
       // Deobfuscate sensitive fields
       const sensitive = ['gClientId', 'gBpFolderId', 'gRdFolderId', 'gApiKey'];
       sensitive.forEach(k => {
@@ -10553,13 +10558,20 @@ const App = {
     AppLog.add('App', 'Starting up', 'RUN', navigator.userAgent.substring(0,60));
 
     AppLog.add('GitHub', 'Loading config.json', 'RUN');
-    const cfgUpdated = await ConfigSync.autoLoad();
-    if (cfgUpdated) {
-      await Cfg.load();
-      AppLog.add('GitHub', 'Config loaded and applied', 'OK');
-    } else {
-      AppLog.add('GitHub', 'Config up to date (no change)', 'INF');
-    }
+    // Fire-and-forget: load config in background without blocking app startup.
+    // Config is optional — if GitHub is slow or unreachable, the dashboard
+    // still loads from cached config in IndexedDB. Remote config sync happens
+    // silently in the background during normal use.
+    ConfigSync.autoLoad()
+      .then(cfgUpdated => {
+        if (cfgUpdated) {
+          Cfg.load().catch(e => console.warn('Reload after GitHub config:', e));
+          AppLog.add('GitHub', 'Config loaded and applied', 'OK');
+        } else {
+          AppLog.add('GitHub', 'Config up to date (no change)', 'INF');
+        }
+      })
+      .catch(e => console.warn('Config auto-load failed:', e.message));
 
     // Handle password reset link
     const urlParams = new URLSearchParams(window.location.search);
