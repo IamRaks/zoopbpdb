@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Business Parameters Dashboard</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
+
+
+
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 [data-theme="dark"]{
@@ -445,7 +445,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 /* EXPORT HIDDEN DIV */
 #exportCanvas{position:fixed;left:-9999px;top:0;background:#fff;padding:20px;font-family:'IBM Plex Sans',sans-serif;min-width:900px}
 </style>
-  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js" defer></script>
+
 </head>
 <body>
 
@@ -1740,7 +1740,8 @@ const Parser = {
   isPct(col){return /(%|percent|ratio)/i.test(col||'');},
   isCount(col){return /\bcount\b/i.test(col||'');},
 
-  parseBP(buf,fname){
+  async parseBP(buf,fname){
+    await LazyLoad.xlsx();
     const wb=XLSX.read(buf,{type:'array'});
     const date=this.dateFromName(fname,'BP');
     const result={date,sheets:{},unit:'lacs'};
@@ -1779,7 +1780,8 @@ const Parser = {
     return result;
   },
 
-  parseRD(buf,fname){
+  async parseRD(buf,fname){
+    await LazyLoad.xlsx();
     const wb=XLSX.read(buf,{type:'array'});
     const date=this.dateFromName(fname,'RD');
     const result={date,sheets:{},unit:'crores'};
@@ -5240,6 +5242,8 @@ const Exporter = {
     canvas.style.display='block';
     await new Promise(r=>setTimeout(r,200));
     try{
+      await LazyLoad.html2canvas();
+      await LazyLoad.jspdf();
       const c=await html2canvas(canvas,{scale:2,useCORS:true,logging:false,backgroundColor:pageBg});
       if(mode==='img'){
         const{row2}=this.getTitle(tabKey);
@@ -11384,6 +11388,7 @@ const App = {
       // Build reset link
       const resetLink = `${window.location.origin}${window.location.pathname}?reset=${token}`;
       // Send email via EmailJS
+      await LazyLoad.emailjs();
       await emailjs.init(pubKey);
       await emailjs.send(svcId, tplId, {
         to_email: email,
@@ -11505,6 +11510,38 @@ const App = {
   },
   updateThemeBtn(){document.getElementById('themeBtn').textContent=document.documentElement.getAttribute('data-theme')==='dark'?'🌙':'☀';},
   setUnit(u){Dashboard.setUnit(u);}
+};
+
+// ── Lazy library loaders ─────────────────────────────────────────
+// CDN libraries are loaded on first use only — not at page startup.
+// This ensures they never block the initial render or App.init().
+const LazyLoad = {
+  _loaded: {},
+  async load(id, url) {
+    if (this._loaded[id]) return;
+    if (document.getElementById('lazyScript_' + id)) {
+      // Already injected — wait for it to finish
+      await new Promise((res, rej) => {
+        const existing = document.getElementById('lazyScript_' + id);
+        if (existing._loaded) { res(); return; }
+        existing.addEventListener('load',  () => { this._loaded[id] = true; res(); });
+        existing.addEventListener('error', () => rej(new Error('Failed to load: ' + url)));
+      });
+      return;
+    }
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.id  = 'lazyScript_' + id;
+      s.src = url;
+      s.onload  = () => { this._loaded[id] = true; s._loaded = true; res(); };
+      s.onerror = () => rej(new Error('Failed to load: ' + url));
+      document.head.appendChild(s);
+    });
+  },
+  async xlsx()      { await this.load('xlsx',       'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'); },
+  async jspdf()     { await this.load('jspdf',      'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'); },
+  async html2canvas(){ await this.load('html2canvas','https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'); },
+  async emailjs()   { await this.load('emailjs',    'https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js'); },
 };
 
 // Yield to browser renderer before starting App.init().
