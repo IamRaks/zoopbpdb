@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Business Parameters Dashboard</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" defer></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 [data-theme="dark"]{
@@ -445,7 +445,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 /* EXPORT HIDDEN DIV */
 #exportCanvas{position:fixed;left:-9999px;top:0;background:#fff;padding:20px;font-family:'IBM Plex Sans',sans-serif;min-width:900px}
 </style>
-  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js" defer></script>
 </head>
 <body>
 
@@ -1585,6 +1585,11 @@ const DB = {
   db:null,
   async open(){
     return new Promise((res,rej)=>{
+      // 5s timeout — if IndexedDB is blocked (another tab, version conflict, private mode),
+      // the open request can hang indefinitely. Timeout allows graceful fallback.
+      const idbTimeout = setTimeout(() => {
+        rej(new Error('IndexedDB open timed out — another tab may be blocking, or browser is in restricted mode'));
+      }, 5000);
       const req=indexedDB.open('BPDash_v5',1);
       req.onupgradeneeded=e=>{
         const db=e.target.result;
@@ -1600,8 +1605,12 @@ const DB = {
         if(!db.objectStoreNames.contains('uploadQueue'))
           db.createObjectStore('uploadQueue'); // pending uploads
       };
-      req.onsuccess=e=>{this.db=e.target.result;res();};
-      req.onerror=e=>rej(e.target.error);
+      req.onsuccess=e=>{clearTimeout(idbTimeout);this.db=e.target.result;res();};
+      req.onerror=e=>{clearTimeout(idbTimeout);rej(e.target.error);};
+      req.onblocked=()=>{
+        clearTimeout(idbTimeout);
+        rej(new Error('IndexedDB blocked — please close other tabs using this app and reload'));
+      };
     });
   },
   _tx(store,mode,fn){return new Promise((res,rej)=>{const tx=this.db.transaction(store,mode);const req=fn(tx.objectStore(store));req.onsuccess=()=>res(req.result);req.onerror=()=>rej(req.error);});},
@@ -8286,17 +8295,12 @@ const ChartUI = {
       }).filter(Boolean);
       if (series.length >= 2) return series;
     }
-    // Fallback: bpFiles (period dates only — used before summary is built)
-    const localDates = await FM.availDates('bp');
-    const series = [];
-    for (const dateStr of localDates) {
-      try {
-        const agg = await DE.getAgg(dateStr, { type:'branch', zone, branchKey }, false);
-        const v = agg?.values?.[paramKey];
-        if (v !== null && v !== undefined && !isNaN(v)) series.push({ date: dateStr, value: v });
-      } catch(e) {}
-    }
-    return series.sort((a,b) => a.date.localeCompare(b.date));
+    // No branch data in summary — return empty.
+    // Branch data is only available after a proper rebuild via _processOneDate.
+    // The bpFiles fallback loop was removed: it called DE.getAgg per date which
+    // is now a pure ChartStore read — if ChartStore has no branch data,
+    // iterating bpFiles won't help either.
+    return [];
   },
 
   // Aggregate series for weekly/monthly — shared bucket keys ensure multi-line alignment
@@ -10553,8 +10557,28 @@ const App = {
   },
 
   async init(){
-    await DB.open(); await Cfg.load();
-    await AppLog.loadPersisted();
+    // Phase 1: Local storage init — wrapped so DB failure doesn't kill everything.
+    // If IndexedDB is blocked or unavailable, continue with empty config (graceful).
+    try {
+      await DB.open();
+    } catch(e) {
+      console.error('[Phase 1] DB.open failed:', e.message);
+      const st = document.getElementById('landingStatusTxt');
+      if (st) st.textContent = '⚠ Storage error — loading in limited mode';
+      // Continue without DB — Cfg.d will use defaults
+    }
+    try {
+      await Cfg.load();
+    } catch(e) {
+      console.error('[Phase 1] Cfg.load failed:', e.message);
+      // Continue with default config
+    }
+    try {
+      await AppLog.loadPersisted();
+    } catch(e) {
+      console.error('[Phase 1] AppLog.loadPersisted failed:', e.message);
+      // Non-critical — continue
+    }
     AppLog.add('App', 'Starting up', 'RUN', navigator.userAgent.substring(0,60));
 
     AppLog.add('GitHub', 'Loading config.json', 'RUN');
@@ -10645,7 +10669,13 @@ const App = {
             AppLog.add('Summary', 'HTTP response', r.ok ? 'OK' : 'WARN',
               'Status: ' + r.status + (r.ok ? '' : apiKey ? ' — check API key / file sharing' : ' — no API key configured'));
             if (!r.ok) continue;
-            chunk = await r.json();
+            // Race body read against 8s timeout — r.json() can hang on slow Drive streams
+            // even after a successful HTTP connection.
+            const summaryText = await Promise.race([
+              r.text(),
+              new Promise((_,rej) => setTimeout(() => rej(new Error('Summary body read timeout')), 8000))
+            ]);
+            chunk = JSON.parse(summaryText);
             AppLog.add('Summary', 'JSON parsed successfully', 'OK',
               'Dates: ' + Object.keys(chunk.dates||{}).length);
             break;
