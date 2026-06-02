@@ -8877,16 +8877,22 @@ const Carousel = {
     let images = [];
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
+      const connTimeout = setTimeout(() => controller.abort(), 5000);
       const resp = await fetch(this.IMG_API, { signal: controller.signal });
-      clearTimeout(timeout);
+      clearTimeout(connTimeout);
       if (resp.ok) {
-        const files = await resp.json();
+        // Race body read against a 4s timeout — resp.json() can hang if
+        // the server streams slowly even after a successful connection.
+        const text = await Promise.race([
+          resp.text(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('body timeout')), 4000))
+        ]);
+        const files = JSON.parse(text);
         images = files
           .filter(f => /\.(jpe?g|png|webp|gif)$/i.test(f.name) || f.name === 'eclgcwebp')
           .map(f => ({ name: f.name, url: f.download_url }));
       }
-    } catch(e) { console.warn('Carousel: could not load images', e.name === 'AbortError' ? '(timeout)' : e); }
+    } catch(e) { console.warn('Carousel: could not load images', e.name === 'AbortError' ? '(timeout)' : e.message); }
 
     // Always add a branded fallback slide
     const zone = (Cfg.get('activeZone') || 'ERNAKULAM') + ' ZONE';
@@ -10584,9 +10590,12 @@ const App = {
     const _zl = document.getElementById('navZoneLine');
     if (_zl) _zl.textContent = zone || '—';
 
-    // Init carousel (async — fetches images from GitHub)
+    // Init carousel — fire-and-forget so it never blocks app startup.
+    // The carousel is decorative; a slow or failed GitHub fetch must not
+    // freeze the dashboard. The fallback branded slide renders immediately
+    // from local HTML if the fetch doesn't resolve in time.
     this.showLanding('Loading...', 5);
-    await Carousel.init();
+    Carousel.init().catch(e => console.warn('Carousel init failed:', e.message));
 
     // No zone configured at all — show setup prompt
     if (!zone) {
