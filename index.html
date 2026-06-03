@@ -475,7 +475,7 @@ function _ready(fn) {
   <button class="icon-btn" onclick="typeof App!=='undefined'?App.openAdminPrompt():window._pendingAdmin=true">⚙ Admin</button>
 </nav>
 
-<div id="mainArea">
+<div id="mainArea" style="display:none">
   <!-- LANDING PAGE -->
   <div id="landingPage" style="display:none">
     <div class="carousel" id="carousel">
@@ -747,7 +747,7 @@ function _ready(fn) {
 </div>
 
 <!-- Activity Log Overlay (accessible before dashboard loads) -->
-<div id="actOverlay" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:150;flex-direction:column">
+<div id="actOverlay" style="display:flex;position:fixed;inset:0;background:var(--bg);z-index:150;flex-direction:column">
   <div style="padding:12px 16px;background:var(--nav);display:flex;align-items:center;gap:10px">
     <button onclick="document.getElementById('actOverlay').style.display='none'"
       style="background:none;border:none;color:var(--text);font-size:18px;cursor:pointer">←</button>
@@ -11175,35 +11175,11 @@ ${issues.map(i=>'  ✗ '+i).join('
 ' +
         'Remove the diagnostic block in App.init() to enable rendering.'));
 
-    // ── UI: apply theme and wiring regardless of data state ──────────
-    document.documentElement.setAttribute('data-theme', Cfg.get('theme') || 'dark');
-    this.updateThemeBtn();
-    document.querySelectorAll('.tab-btn').forEach(b =>
-      b.addEventListener('click', () => Dashboard.onTabClick(b.dataset.tab))
-    );
-    document.getElementById('navZone').textContent = zone || 'No Zone';
-    const _zl = document.getElementById('navZoneLine');
-    if (_zl) _zl.textContent = zone || '—';
-
-    Carousel.init().catch(() => {});
-
-    // ── DASHBOARD RENDER INTENTIONALLY BLOCKED ────────────────────────
-    // Review Activity Log (📋 Log button) to see all diagnostic results.
-    // Once the root cause is identified and fixed, replace this block
-    // with the normal dashboard init flow.
-    this.showLanding('Diagnostic complete — check 📋 Log', 100);
-    const lp = document.getElementById('landingPage');
-    if (lp) lp.style.display = 'flex';
-    const dw = document.getElementById('dashWrap');
-    if (dw) dw.style.display = 'none';
-    const sp = document.getElementById('landingSpin');
-    if (sp) sp.style.display = 'none';
-
-    // Open Activity Log automatically so results are immediately visible
-    setTimeout(() => this.showActivityLog(), 800);
-
-    // ── Step 7: Background sync (token-gated, silent) ─────────
-    setTimeout(() => this._backgroundSync(zone), 1200);
+    // ── DIAGNOSTIC MODE END ──────────────────────────────────────────
+    // Dashboard, carousel, background sync all intentionally disabled.
+    // Activity Log is the only output. Share the log to identify the issue.
+    AppLog.add('App', '══ ALL CHECKS DONE ══', 'OK',
+      'Dashboard render is blocked. Review the log above and share it for analysis.');
   },
 
   // Background sync — only runs if valid OAuth token exists
