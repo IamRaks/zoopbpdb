@@ -1472,14 +1472,14 @@ const APILog = {
 
       let folderId = null;
       const fq = encodeURIComponent(`'${parentId}' in parents and name='ADMIN_LOGS' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-      const fr = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
+      const fr = await fetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
         { headers: { Authorization: `Bearer ${token}` } });
       if (fr.ok) {
         const fd = await fr.json();
         folderId = fd.files?.[0]?.id;
       }
       if (!folderId) {
-        const cr = await window._origFetch('https://www.googleapis.com/drive/v3/files',
+        const cr = await fetch('https://www.googleapis.com/drive/v3/files',
           { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: 'ADMIN_LOGS', mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }) });
         if (cr.ok) folderId = (await cr.json()).id;
@@ -1489,7 +1489,7 @@ const APILog = {
       // Check for existing file for this date
       const fname = `BP_ADMINLOG_${dateStr}.json`;
       const eq = encodeURIComponent(`'${folderId}' in parents and name='${fname}' and trashed=false`);
-      const er = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
+      const er = await fetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
         { headers: { Authorization: `Bearer ${token}` } });
       let existingId = null;
       if (er.ok) existingId = (await er.json()).files?.[0]?.id;
@@ -1497,7 +1497,7 @@ const APILog = {
       // Merge with existing if present
       let finalData = logData;
       if (existingId) {
-        const dr = await window._origFetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
+        const dr = await fetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
           { headers: { Authorization: `Bearer ${token}` } });
         if (dr.ok) {
           const existing = await dr.json().catch(() => null);
@@ -1516,7 +1516,7 @@ const APILog = {
       const url = existingId
         ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart`
         : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
-      await window._origFetch(url, {
+      await fetch(url, {
         method: existingId ? 'PATCH' : 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form
@@ -1548,7 +1548,7 @@ const APILog = {
         ? await GDrive._getParentFolderId(Cfg.get('gBpFolderId')) : null;
       if (!parentId) return null;
       const fq = encodeURIComponent(`'${parentId}' in parents and name='ADMIN_LOGS' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-      const fr = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
+      const fr = await fetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
         { headers: { Authorization: `Bearer ${token}` } });
       if (!fr.ok) return null;
       const fd = await fr.json();
@@ -1556,12 +1556,12 @@ const APILog = {
       if (!folderId) return null;
       const fname = `BP_ADMINLOG_${dateStr}.json`;
       const eq = encodeURIComponent(`'${folderId}' in parents and name='${fname}' and trashed=false`);
-      const er = await window._origFetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
+      const er = await fetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
         { headers: { Authorization: `Bearer ${token}` } });
       if (!er.ok) return null;
       const existingId = (await er.json()).files?.[0]?.id;
       if (!existingId) return null;
-      const dr = await window._origFetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
+      const dr = await fetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
         { headers: { Authorization: `Bearer ${token}` } });
       if (!dr.ok) return null;
       data = await dr.json().catch(() => null);
@@ -1589,7 +1589,52 @@ window.fetch = async function(url, opts) {
     const resp = await window._origFetch(url, opts);
     const ms = Date.now() - t0;
     const ok = resp.ok;
-    const statusDetail = `HTTP ${resp.status} · ${detail}`;
+    const statusDetail = `HTTP ${resp.status} · ${ms}ms · ${detail}`;
+
+    // For GitHub config and Drive summary fetches — clone and log key response fields
+    // so Activity Log shows what was actually received, not just the HTTP status.
+    const isGitHubConfig = entity === 'GitHub' && s.includes('config.json');
+    const isDriveSummary = entity === 'Drive' && s.includes('alt=media') &&
+                           !s.includes('ADMINLOG') && !s.includes('spreadsheets');
+
+    if (ok && (isGitHubConfig || isDriveSummary)) {
+      // Clone so the original response stream is not consumed
+      resp.clone().text().then(body => {
+        try {
+          const parsed = JSON.parse(body);
+          if (isGitHubConfig) {
+            const ids = parsed.summaryFileIds || {};
+            const hasZone = !!(parsed.activeZone);
+            const colCount = (parsed.columnOrder||[]).filter(c=>c.enabled).length;
+            const paramCount = (parsed.paramOrder||[]).length;
+            const sheetCount = Object.keys(parsed.sheets||{}).filter(k=>(parsed.sheets[k]||{}).enabled).length;
+            APILog._record(entity, 'Config response parsed', 'OK', ms,
+              `activeZone=${parsed.activeZone||'null'} | ` +
+              `summaryIds.recent=${ids.recent?.substring(0,12)||'null'} | ` +
+              `summaryIds.history=${ids.history?.substring(0,12)||'null'} | ` +
+              `columnOrder(enabled)=${colCount} | paramOrder=${paramCount} | ` +
+              `sheets(enabled)=${sheetCount} | ` +
+              `adminPasswordHash=${parsed.adminPasswordHash?'SET':'NOT SET'}`,
+              true);
+          } else if (isDriveSummary) {
+            const dates = Object.keys(parsed.dates||{});
+            const zone = parsed._meta?.zone || '?';
+            const chunk = parsed._meta?.chunk || '?';
+            const withZone = dates.filter(d => parsed.dates[d]?.['__zone__']).length;
+            APILog._record(entity, 'Summary response parsed', 'OK', ms,
+              `chunk=${chunk} | zone=${zone} | ` +
+              `totalDates=${dates.length} | datesWithZone=${withZone} | ` +
+              `range=${dates.sort()[0]||'none'} → ${dates.sort().slice(-1)[0]||'none'} | ` +
+              `size=${(body.length/1024).toFixed(1)}KB`,
+              true);
+          }
+        } catch(pe) {
+          APILog._record(entity, 'Response parse failed', 'WARN', ms,
+            `Could not parse JSON body: ${pe.message}`, false);
+        }
+      }).catch(() => {});
+    }
+
     APILog._record(entity, label, resp.status.toString(), ok, ms, statusDetail, !ok);
     return resp;
   } catch(err) {
@@ -10839,6 +10884,20 @@ const App = {
     }
     AppLog.add('App', 'Starting up', 'RUN', navigator.userAgent.substring(0,60));
 
+    // Log the full config state loaded from IndexedDB
+    const _cfgSnap = Cfg.d || {};
+    const _ids0 = _cfgSnap.summaryFileIds || {};
+    AppLog.add('App', 'IndexedDB config state', 'INF',
+      `activeZone=${_cfgSnap.activeZone||'null'} | ` +
+      `summaryIds.recent=${_ids0.recent?.substring(0,12)||'null'} | ` +
+      `summaryIds.history=${_ids0.history?.substring(0,12)||'null'} | ` +
+      `columnOrder=${(_cfgSnap.columnOrder||[]).filter(c=>c.enabled).length} enabled cols | ` +
+      `paramOrder=${(_cfgSnap.paramOrder||[]).length} params | ` +
+      `sheets=${Object.keys(_cfgSnap.sheets||{}).filter(k=>(_cfgSnap.sheets[k]||{}).enabled).length} enabled sheets | ` +
+      `adminPasswordHash=${_cfgSnap.adminPasswordHash?'SET':'NOT SET'} | ` +
+      `gApiKey=${_cfgSnap.gApiKey?'SET':'NOT SET'} | ` +
+      `ghPat=${_cfgSnap.ghPat?'SET':'NOT SET'}`);
+
     // Config MUST be awaited before reading summaryFileIds.
     // summaryFileIds lives in config.json on GitHub. If local IndexedDB has an
     // old or empty config (new device, cleared browser data), summaryFileIds will
@@ -10853,11 +10912,22 @@ const App = {
       ]);
       if (cfgUpdated) {
         await Cfg.load();
+        const _cfgGH = Cfg.d || {};
+        const _idsGH = _cfgGH.summaryFileIds || {};
         AppLog.add('GitHub', 'Config loaded and applied from GitHub', 'OK',
-          `summaryFileIds.recent=${(Cfg.get('summaryFileIds')||{}).recent?.substring(0,12)||'null'}`);
+          `activeZone=${_cfgGH.activeZone||'null'} | ` +
+          `summaryIds.recent=${_idsGH.recent?.substring(0,12)||'null'} | ` +
+          `summaryIds.history=${_idsGH.history?.substring(0,12)||'null'} | ` +
+          `columnOrder=${(_cfgGH.columnOrder||[]).filter(c=>c.enabled).length} enabled | ` +
+          `paramOrder=${(_cfgGH.paramOrder||[]).length} | ` +
+          `sheets=${Object.keys(_cfgGH.sheets||{}).filter(k=>(_cfgGH.sheets[k]||{}).enabled).length} enabled`);
       } else {
+        const _cfgTO = Cfg.d || {};
+        const _idsTO = _cfgTO.summaryFileIds || {};
         AppLog.add('GitHub', 'Config up to date or timed out — using cached config', 'INF',
-          `summaryFileIds.recent=${(Cfg.get('summaryFileIds')||{}).recent?.substring(0,12)||'null'}`);
+          `summaryIds.recent=${_idsTO.recent?.substring(0,12)||'null'} | ` +
+          `columnOrder=${(_cfgTO.columnOrder||[]).filter(c=>c.enabled).length} enabled | ` +
+          `paramOrder=${(_cfgTO.paramOrder||[]).length}`);
       }
     } catch(e) {
       AppLog.add('GitHub', 'Config load failed — using cached config', 'WARN', e.message);
@@ -10960,7 +11030,13 @@ const App = {
           await ChartStore.mergeChunk(zone, chunk);
           summaryLoaded = true;
           DataIntegrity._lastSummaryFetch = Date.now();
-          AppLog.add('Summary', 'Merged into IndexedDB', 'OK', Object.keys(chunk.dates).length + ' dates');
+          const _storeAfter = await ChartStore._getStore(zone);
+          const _storeAllDates = Object.keys(_storeAfter?.dates||{});
+          const _storeZoneDates = _storeAllDates.filter(d=>_storeAfter.dates[d]?.['__zone__']);
+          AppLog.add('Summary', 'Merged into IndexedDB', 'OK',
+            `newDates=${Object.keys(chunk.dates||{}).length} | ` +
+            `storeTotal=${_storeAllDates.length} | storeWithZone=${_storeZoneDates.length} | ` +
+            `range=${[..._storeZoneDates].sort()[0]||'none'} → ${[..._storeZoneDates].sort().slice(-1)[0]||'none'}`);
           // this.showLanding('Preparing dashboard...', 60); — removed, landing hidden by default
           // Download history in background
           if (summaryIds.history) {
@@ -11042,10 +11118,32 @@ const App = {
       const latestDate = indexedDates.length
         ? indexedDates.sort().reverse()[0]
         : (bpDates.length ? bpDates[0] : '');
+
+      // Log everything Dashboard.init() will depend on
+      const _cfgDash = Cfg.d || {};
+      const _storeDash = await ChartStore._getStore(zone);
+      const _storeDashDates = Object.keys(_storeDash?.dates||{}).filter(d=>_storeDash.dates[d]?.['__zone__']);
+      AppLog.add('Dashboard', 'Pre-init state', 'RUN',
+        `latestDate=${latestDate||'null'} | ` +
+        `fileIndexDates=${indexedDates.length} | bpFileDates=${bpDates.length} | ` +
+        `chartStoreDates(withZone)=${_storeDashDates.length} | ` +
+        `columnOrder(enabled)=${(_cfgDash.columnOrder||[]).filter(c=>c.enabled).length} | ` +
+        `paramOrder=${(_cfgDash.paramOrder||[]).length} | ` +
+        `sheets(enabled)=${Object.keys(_cfgDash.sheets||{}).filter(k=>(_cfgDash.sheets[k]||{}).enabled).length} | ` +
+        `periods(enabled)=${Object.values(_cfgDash.periods||{}).filter(p=>p.enabled).length} | ` +
+        `activeZone=${_cfgDash.activeZone||'null'} | ` +
+        `fallback=${_cfgDash.fallback?'ON':'OFF'}`);
+
       if (latestDate)
         document.getElementById('navInfo').textContent = `Latest: ${latestDate}`;
+
       await Dashboard.init();
-    } catch(e) { console.warn('Dashboard init error:', e); }
+      AppLog.add('Dashboard', 'init() completed', 'OK',
+        `periodDates=${JSON.stringify(Dashboard.state?.periodDates||{})}`);
+    } catch(e) {
+      AppLog.add('Dashboard', 'init() threw error', 'ERR', e.message);
+      console.warn('Dashboard init error:', e);
+    }
 
     // Dashboard is already visible — just ensure landing is hidden
     this.hideLanding();
