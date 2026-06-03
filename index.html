@@ -7067,78 +7067,6 @@ const DataIntegrity = {
     }
   }
 };
-          processed++;
-          const pct = Math.round(20 + (processed / allDates.length) * 60);
-          setProgress(pct, `Processing ${processed}/${allDates.length}...`);
-
-          // Per-date log entries
-          if (r.error) {
-            log('', 'Sheets API', `${r.dateStr}`, 'ERR', r.error);
-          } else {
-            const rdStatus = r.rdSkipped ? 'no RD file' : r.rdOk ? 'RD ✓' : 'RD fetch failed';
-            const scopes = Object.keys(r.scopeMap).length;
-            log('', 'Sheets API', `${r.dateStr}`,
-              r.bpOk ? 'OK' : 'ERR',
-              `BP ✓ | ${rdStatus} | ${scopes} scope${scopes!==1?'s':''} aggregated`);
-          }
-        });
-
-        if (i + this._PARALLEL < items.length)
-          await new Promise(r => setTimeout(r, 1000));
-      }
-
-      // ── Step 6: Single atomic write to IndexedDB ──────────────
-      log('', 'Local Storage', `Writing all ${allResults.length} dates atomically`, 'WAIT');
-      setProgress(82, 'Writing to storage...');
-      const store = await ChartStore._getStore(zone);
-      let written = 0;
-      for (const r of allResults) {
-        if (r.scopeMap && Object.keys(r.scopeMap).length) {
-          if (!store.dates[r.dateStr]) store.dates[r.dateStr] = {};
-          Object.assign(store.dates[r.dateStr], r.scopeMap);
-          written++;
-        }
-      }
-      if (written > 0) await ChartStore._setStore(zone, store);
-      await DB.set('config','summaryFileVersions', versions);
-      log('', 'Local Storage', 'Write complete', 'OK', `${written} dates written`);
-      setProgress(88, `${written} dates written ✓`);
-
-      // ── Step 7: Build and push summary chunks to Drive ────────
-      log('', 'Drive API', 'Pushing summary files to Drive', 'WAIT');
-      setProgress(90, 'Pushing to Drive...');
-      try {
-        await SummaryMgr.pushToDriveWithVersions(zone);
-        await DB.set('config','summaryLastUpdated', Date.now());
-        const chunks = ['BP_SUMMARY_META.json', 'BP_SUMMARY_RECENT.json'];
-        log('', 'Drive API', 'Summary files uploaded and made public', 'OK',
-          'BP_SUMMARY_META.json + BP_SUMMARY_RECENT.json (publicly readable)');
-        // pushToDrive already called ConfigSync.push internally and logged result
-        setProgress(98, 'Summary pushed ✓');
-      } catch(e) {
-        log('', 'Drive API', 'Push failed', 'ERR', e.message);
-        log('', 'App', 'Data saved locally — push can be retried', 'WARN');
-        setProgress(95, 'Local save OK, Drive push failed');
-      }
-
-      // ── Done ──────────────────────────────────────────────────
-      const finalDates = await ChartStore.getSortedDates(zone);
-      const failed = allResults.filter(r => r.error || !r.bpOk).length;
-      const summary = `${finalDates.length} dates in chart data` +
-        (failed ? `, ${failed} date(s) skipped` : '') +
-        (finalDates.length ? `. Range: ${finalDates[0]} → ${finalDates[finalDates.length-1]}` : '');
-      log('', 'App', 'Force Rebuild complete', 'OK', summary);
-      setProgress(100, 'Complete ✓');
-      await finish(true, `✓ ${summary}`);
-      this._refreshVisibleChart();
-
-    } catch(e) {
-      log('', 'App', 'Unexpected error', 'ERR', e.message);
-      console.error('forceRebuild error:', e);
-      await finish(false, `✗ Rebuild failed: ${e.message}`);
-    }
-  }
-};
 // ================================================================
 // ADMIN
 // ================================================================
@@ -11026,16 +10954,12 @@ const App = {
         }, 10000);
         const r = await fetch(pubUrl, { signal: ctrl.signal });
         clearTimeout(t);
-        AppLog.add('Drive', `Summary fetch HTTP response`, r.ok ? 'OK' : 'ERR',
-          `HTTP ${r.status} ${r.statusText}
-` +
-          (!r.ok && r.status === 403 ? 'HTTP 403 — file not publicly readable or API key invalid
-' : '') +
-          (!r.ok && r.status === 404 ? 'HTTP 404 — file not found on Drive (stale ID?)
-' : '') +
-          (!r.ok && r.status === 400 ? 'HTTP 400 — bad request, API key may be malformed
-' : '') +
-          `fileId = ${summaryIds.recent.substring(0,20)}`);
+        AppLog.add('Drive', 'Summary fetch HTTP response', r.ok ? 'OK' : 'ERR',
+          'HTTP ' + r.status + ' ' + r.statusText +
+          (!r.ok && r.status === 403 ? ' | 403: not publicly readable or API key invalid' : '') +
+          (!r.ok && r.status === 404 ? ' | 404: file not found on Drive (stale ID?)' : '') +
+          (!r.ok && r.status === 400 ? ' | 400: bad request, API key malformed' : '') +
+          ' | fileId=' + summaryIds.recent.substring(0,20));
 
         if (r.ok) {
           AppLog.add('Drive', 'Reading summary response body', 'RUN',
@@ -11143,37 +11067,21 @@ const App = {
 
     AppLog.add('App', 'Dashboard dependency check',
       issues.length === 0 ? 'OK' : 'ERR',
-      `activeZone          = ${zone || 'NOT SET'}
-` +
-      `columnOrder(enabled)= ${colDefs.length}
-` +
-      `paramOrder          = ${paramDefs.length}
-` +
-      `sheets(enabled)     = ${sheets.length}
-` +
-      `periods(enabled)    = ${periods.length}
-` +
-      `latestDateInStore   = ${latestInStore || 'NONE'}
-` +
-      (issues.length ? `
-ISSUES FOUND:
-${issues.map(i=>'  ✗ '+i).join('
-')}` :
-        '
-  ✓ All dependencies present — dashboard should render'));
+      'activeZone=' + (zone||'NOT SET') +
+      ' | columnOrder(enabled)=' + colDefs.length +
+      ' | paramOrder=' + paramDefs.length +
+      ' | sheets(enabled)=' + sheets.length +
+      ' | periods(enabled)=' + periods.length +
+      ' | latestDate=' + (latestInStore||'NONE') +
+      (issues.length ? ' | ISSUES: ' + issues.join(' | ') : ' | ALL OK'));
 
     // ── CHECK 8: Summary — complete ──────────────────────────────────
     AppLog.add('App', '══ DIAGNOSTIC COMPLETE ══',
       issues.length === 0 && summaryLoaded ? 'OK' : 'ERR',
-      `dbOK=${dbOK} | githubOK=${githubOK} | summaryLoaded=${summaryLoaded} | ` +
-      `issues=${issues.length}
-` +
-      (issues.length ? `Blocking issues:
-${issues.map(i=>'  ✗ '+i).join('
-')}` :
-        'All checks passed — dashboard render is currently BLOCKED for diagnostic purposes.
-' +
-        'Remove the diagnostic block in App.init() to enable rendering.'));
+      'dbOK=' + dbOK + ' | githubOK=' + githubOK +
+      ' | summaryLoaded=' + summaryLoaded +
+      ' | issues=' + issues.length +
+      (issues.length ? ' | ISSUES: ' + issues.join(' | ') : ' | ALL CHECKS PASSED'));
 
     // ── DIAGNOSTIC MODE END ──────────────────────────────────────────
     // Dashboard, carousel, background sync all intentionally disabled.
