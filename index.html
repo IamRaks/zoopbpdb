@@ -145,6 +145,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 
 /* STATE */
 .state-card{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:14px;color:var(--text3)}
+.skel-row{height:36px;border-radius:6px;background:linear-gradient(90deg,var(--bg3) 25%,var(--bg2) 50%,var(--bg3) 75%);background-size:200% 100%;animation:shimmer 1.4s infinite;margin-bottom:6px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 .state-card .ico{font-size:36px}
 .state-card h3{font-size:15px;font-weight:600;color:var(--text2)}
 .state-card p{font-size:12px;text-align:center;max-width:320px;line-height:1.5}
@@ -449,6 +451,18 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 </head>
 <body>
 
+<script>
+// Guard function — queues any click that fires before App is ready.
+// Called from all onclick handlers that reference App/Dashboard/ChartUI/Exporter.
+// Once App.init() completes it flushes the queue.
+window._q = [];
+window._appReady = false;
+function _ready(fn) {
+  if (window._appReady) { fn(); }
+  else { window._q.push(fn); }
+}
+</script>
+
 <nav id="topNav">
   <div class="logo" style="flex-direction:column;align-items:flex-start;gap:1px;line-height:1.15">
     <div style="font-size:13px;font-weight:800;letter-spacing:.04em">📊 <span>BUSINESS PERFORMANCE</span> DASHBOARD</div>
@@ -456,9 +470,9 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
   </div>
   <div class="zone-badge" id="navZone" style="display:none">No Zone</div>
   <div class="nav-sp"></div>
-  <div class="nav-info" id="navInfo">—</div>
-  <button class="theme-btn" id="themeBtn" onclick="App.toggleTheme()" title="Toggle theme">🌙</button>
-  <button class="icon-btn" onclick="App.openAdminPrompt()">⚙ Admin</button>
+  <div class="nav-info" id="navInfo">Loading...</div>
+  <button class="theme-btn" id="themeBtn" onclick="typeof App!=='undefined'&&App.toggleTheme()" title="Toggle theme">🌙</button>
+  <button class="icon-btn" onclick="typeof App!=='undefined'?App.openAdminPrompt():window._pendingAdmin=true">⚙ Admin</button>
 </nav>
 
 <div id="mainArea">
@@ -466,8 +480,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
   <div id="landingPage" style="display:none">
     <div class="carousel" id="carousel">
       <!-- slides injected by Carousel.init() -->
-      <button class="carousel-arrow prev" onclick="Carousel.prev()">&#8249;</button>
-      <button class="carousel-arrow next" onclick="Carousel.next()">&#8250;</button>
+      <button class="carousel-arrow prev" onclick="_ready(()=>{Carousel.prev()})">&#8249;</button>
+      <button class="carousel-arrow next" onclick="_ready(()=>{Carousel.next()})">&#8250;</button>
       <div class="carousel-dots" id="carouselDots"></div>
     </div>
     <div class="landing-prog"><div class="landing-prog-fill" id="landingProgFill"></div></div>
@@ -475,7 +489,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <div class="spin" id="landingSpin"></div>
       <span class="status-txt" id="landingStatusTxt">Initialising...</span>
       <button
-        onclick="App.showActivityLog()"
+        onclick="_ready(()=>{App.showActivityLog()})"
         title="View Activity Log"
         style="margin-left:auto;background:none;border:1px solid var(--border);
                color:var(--text3);border-radius:6px;padding:3px 9px;font-size:10px;
@@ -533,7 +547,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <div class="ico">📁</div>
     <h3>Welcome to BP Dashboard</h3>
     <p>Open Admin to configure data source, zone and parameters.</p>
-    <button class="btn-p" onclick="App.openAdminPrompt()">Open Admin Panel</button>
+    <button class="btn-p" onclick="_ready(()=>{App.openAdminPrompt()})">Open Admin Panel</button>
   </div>
 
   <!-- Summary not ready prompt -->
@@ -542,8 +556,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <h3>Dashboard Setup Not Complete</h3>
     <p>Chart data is not yet available. Please contact your Administrator.</p>
     <p style="font-size:11px;color:var(--text3);margin-top:4px">Administrator: Open Admin Panel → Upload &amp; Summary → Force Rebuild</p>
-    <button class="btn-s" style="margin-top:12px" onclick="App.openAdminPrompt()">Admin Login</button>
-    <button class="btn-s" style="margin-top:8px;background:var(--bg3)" onclick="App.showActivityLog()">📋 View Activity Log</button>
+    <button class="btn-s" style="margin-top:12px" onclick="_ready(()=>{App.openAdminPrompt()})">Admin Login</button>
+    <button class="btn-s" style="margin-top:8px;background:var(--bg3)" onclick="_ready(()=>{App.showActivityLog()})">📋 View Activity Log</button>
   </div>
 
   <div id="dashWrap" style="display:block">
@@ -561,29 +575,29 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <h2 id="zoneTitle">Zone Overview</h2>
           <div class="hdr-ctrl">
             <div class="unit-tgl" id="unitTgl">
-              <button onclick="App.setUnit('rs')" data-unit="rs">₹ Rs</button>
-              <button onclick="App.setUnit('lacs')" data-unit="lacs">Lacs</button>
-              <button onclick="App.setUnit('crores')" data-unit="crores">Crores</button>
+              <button onclick="_ready(()=>{App.setUnit('rs')})" data-unit="rs">₹ Rs</button>
+              <button onclick="_ready(()=>{App.setUnit('lacs')})" data-unit="lacs">Lacs</button>
+              <button onclick="_ready(()=>{App.setUnit('crores')})" data-unit="crores">Crores</button>
             </div>
             <div class="exp-grp">
-              <button class="exp-btn" onclick="Exporter.go('zone','img')">⬇ IMG</button>
-              <button class="exp-btn" onclick="Exporter.go('zone','pdf')">⬇ PDF</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('zone','img')})">⬇ IMG</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('zone','pdf')})">⬇ PDF</button>
             </div>
           </div>
         </div>
-        <div id="zoneTbl"></div>
+        <div id="zoneTbl"><div style="padding:12px 8px"><div class="skel-row" style="width:100%"></div><div class="skel-row" style="width:100%"></div><div class="skel-row" style="width:100%"></div><div class="skel-row" style="width:100%"></div><div class="skel-row" style="width:100%"></div><div class="skel-row" style="width:96%"></div><div class="skel-row" style="width:98%"></div><div class="skel-row" style="width:100%"></div></div></div>
         <div class="fnote" id="zoneFn"></div>
         <div class="chart-section" id="zoneChartSection" style="display:none">
           <div class="chart-hdr">
-            <button class="chart-nav-btn" onclick="ChartUI.prev('zone')">&#8249;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.prev('zone')})">&#8249;</button>
             <span class="chart-param-name" id="zoneChartParam">—</span>
             <span class="chart-counter" id="zoneChartCounter"></span>
             <div class="chart-timeline">
-              <button class="chart-tl-btn active" data-tl="daily" onclick="ChartUI.setTimeline('zone','daily',this)">Daily</button>
-              <button class="chart-tl-btn" data-tl="weekly" onclick="ChartUI.setTimeline('zone','weekly',this)">Weekly</button>
-              <button class="chart-tl-btn" data-tl="monthly" onclick="ChartUI.setTimeline('zone','monthly',this)">Monthly</button>
+              <button class="chart-tl-btn active" data-tl="daily" onclick="_ready(()=>{ChartUI.setTimeline('zone','daily',this)})">Daily</button>
+              <button class="chart-tl-btn" data-tl="weekly" onclick="_ready(()=>{ChartUI.setTimeline('zone','weekly',this)})">Weekly</button>
+              <button class="chart-tl-btn" data-tl="monthly" onclick="_ready(()=>{ChartUI.setTimeline('zone','monthly',this)})">Monthly</button>
             </div>
-            <button class="chart-nav-btn" onclick="ChartUI.next('zone')">&#8250;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.next('zone')})">&#8250;</button>
           </div>
           <div class="chart-wrap" id="zoneChartWrap"></div>
           <div class="chart-legend" id="zoneChartLegend"></div>
@@ -595,8 +609,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <h2 id="allRegTitle">All Regions</h2>
           <div class="hdr-ctrl">
             <div class="exp-grp">
-              <button class="exp-btn" onclick="Exporter.go('allregions','img')">⬇ IMG</button>
-              <button class="exp-btn" onclick="Exporter.go('allregions','pdf')">⬇ PDF</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('allregions','img')})">⬇ IMG</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('allregions','pdf')})">⬇ PDF</button>
             </div>
           </div>
         </div>
@@ -604,15 +618,15 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="fnote" id="allRegFn"></div>
         <div class="chart-section" id="allregionsChartSection" style="display:none">
           <div class="chart-hdr">
-            <button class="chart-nav-btn" onclick="ChartUI.prev('allregions')">&#8249;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.prev('allregions')})">&#8249;</button>
             <span class="chart-param-name" id="allregionsChartParam">—</span>
             <span class="chart-counter" id="allregionsChartCounter"></span>
             <div class="chart-timeline">
-              <button class="chart-tl-btn active" data-tl="daily" onclick="ChartUI.setTimeline('allregions','daily',this)">Daily</button>
-              <button class="chart-tl-btn" data-tl="weekly" onclick="ChartUI.setTimeline('allregions','weekly',this)">Weekly</button>
-              <button class="chart-tl-btn" data-tl="monthly" onclick="ChartUI.setTimeline('allregions','monthly',this)">Monthly</button>
+              <button class="chart-tl-btn active" data-tl="daily" onclick="_ready(()=>{ChartUI.setTimeline('allregions','daily',this)})">Daily</button>
+              <button class="chart-tl-btn" data-tl="weekly" onclick="_ready(()=>{ChartUI.setTimeline('allregions','weekly',this)})">Weekly</button>
+              <button class="chart-tl-btn" data-tl="monthly" onclick="_ready(()=>{ChartUI.setTimeline('allregions','monthly',this)})">Monthly</button>
             </div>
-            <button class="chart-nav-btn" onclick="ChartUI.next('allregions')">&#8250;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.next('allregions')})">&#8250;</button>
           </div>
           <div class="chart-wrap" id="allregionsChartWrap"></div>
           <div class="chart-legend" id="allregionsChartLegend"></div>
@@ -630,8 +644,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <h2 id="regionTitle">Region Overview</h2>
           <div class="hdr-ctrl">
             <div class="exp-grp">
-              <button class="exp-btn" onclick="Exporter.go('region','img')">⬇ IMG</button>
-              <button class="exp-btn" onclick="Exporter.go('region','pdf')">⬇ PDF</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('region','img')})">⬇ IMG</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('region','pdf')})">⬇ PDF</button>
             </div>
           </div>
         </div>
@@ -639,15 +653,15 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="fnote" id="regionFn"></div>
         <div class="chart-section" id="regionChartSection" style="display:none">
           <div class="chart-hdr">
-            <button class="chart-nav-btn" onclick="ChartUI.prev('region')">&#8249;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.prev('region')})">&#8249;</button>
             <span class="chart-param-name" id="regionChartParam">—</span>
             <span class="chart-counter" id="regionChartCounter"></span>
             <div class="chart-timeline">
-              <button class="chart-tl-btn active" data-tl="daily" onclick="ChartUI.setTimeline('region','daily',this)">Daily</button>
-              <button class="chart-tl-btn" data-tl="weekly" onclick="ChartUI.setTimeline('region','weekly',this)">Weekly</button>
-              <button class="chart-tl-btn" data-tl="monthly" onclick="ChartUI.setTimeline('region','monthly',this)">Monthly</button>
+              <button class="chart-tl-btn active" data-tl="daily" onclick="_ready(()=>{ChartUI.setTimeline('region','daily',this)})">Daily</button>
+              <button class="chart-tl-btn" data-tl="weekly" onclick="_ready(()=>{ChartUI.setTimeline('region','weekly',this)})">Weekly</button>
+              <button class="chart-tl-btn" data-tl="monthly" onclick="_ready(()=>{ChartUI.setTimeline('region','monthly',this)})">Monthly</button>
             </div>
-            <button class="chart-nav-btn" onclick="ChartUI.next('region')">&#8250;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.next('region')})">&#8250;</button>
           </div>
           <div class="chart-wrap" id="regionChartWrap"></div>
           <div class="chart-legend" id="regionChartLegend"></div>
@@ -675,8 +689,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <h2 id="branchTitle">Branch View</h2>
           <div class="hdr-ctrl">
             <div class="exp-grp">
-              <button class="exp-btn" onclick="Exporter.go('branch','img')">⬇ IMG</button>
-              <button class="exp-btn" onclick="Exporter.go('branch','pdf')">⬇ PDF</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('branch','img')})">⬇ IMG</button>
+              <button class="exp-btn" onclick="_ready(()=>{Exporter.go('branch','pdf')})">⬇ PDF</button>
             </div>
           </div>
         </div>
@@ -684,15 +698,15 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="fnote" id="branchFn"></div>
         <div class="chart-section" id="branchChartSection" style="display:none">
           <div class="chart-hdr">
-            <button class="chart-nav-btn" onclick="ChartUI.prev('branch')">&#8249;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.prev('branch')})">&#8249;</button>
             <span class="chart-param-name" id="branchChartParam">—</span>
             <span class="chart-counter" id="branchChartCounter"></span>
             <div class="chart-timeline">
-              <button class="chart-tl-btn active" data-tl="daily" onclick="ChartUI.setTimeline('branch','daily',this)">Daily</button>
-              <button class="chart-tl-btn" data-tl="weekly" onclick="ChartUI.setTimeline('branch','weekly',this)">Weekly</button>
-              <button class="chart-tl-btn" data-tl="monthly" onclick="ChartUI.setTimeline('branch','monthly',this)">Monthly</button>
+              <button class="chart-tl-btn active" data-tl="daily" onclick="_ready(()=>{ChartUI.setTimeline('branch','daily',this)})">Daily</button>
+              <button class="chart-tl-btn" data-tl="weekly" onclick="_ready(()=>{ChartUI.setTimeline('branch','weekly',this)})">Weekly</button>
+              <button class="chart-tl-btn" data-tl="monthly" onclick="_ready(()=>{ChartUI.setTimeline('branch','monthly',this)})">Monthly</button>
             </div>
-            <button class="chart-nav-btn" onclick="ChartUI.next('branch')">&#8250;</button>
+            <button class="chart-nav-btn" onclick="_ready(()=>{ChartUI.next('branch')})">&#8250;</button>
           </div>
           <div class="chart-wrap" id="branchChartWrap"></div>
           <div class="chart-legend" id="branchChartLegend"></div>
@@ -704,7 +718,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <!-- Filter chips -->
         <div id="actFilterBar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
           <button class="act-chip active" data-filter="all" onclick="AppLog.setFilter('all',this)">All</button>
-          <button class="act-chip" data-filter="App" onclick="AppLog.setFilter('App',this)">App</button>
+          <button class="act-chip" data-filter="App" onclick="_ready(()=>{AppLog.setFilter('App',this)})">App</button>
           <button class="act-chip" data-filter="OAuth" onclick="AppLog.setFilter('OAuth',this)">OAuth</button>
           <button class="act-chip" data-filter="Drive API" onclick="AppLog.setFilter('Drive API',this)">Drive</button>
           <button class="act-chip" data-filter="Sheets API" onclick="AppLog.setFilter('Sheets API',this)">Sheets</button>
@@ -743,7 +757,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
   </div>
   <div style="padding:8px 12px;background:var(--bg2);display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--border)">
     <button class="act-chip active" data-filter="all" onclick="AppLog.setFilter('all',this)">All</button>
-    <button class="act-chip" data-filter="App" onclick="AppLog.setFilter('App',this)">App</button>
+    <button class="act-chip" data-filter="App" onclick="_ready(()=>{AppLog.setFilter('App',this)})">App</button>
     <button class="act-chip" data-filter="OAuth" onclick="AppLog.setFilter('OAuth',this)">OAuth</button>
     <button class="act-chip" data-filter="Drive API" onclick="AppLog.setFilter('Drive API',this)">Drive</button>
     <button class="act-chip" data-filter="Sheets API" onclick="AppLog.setFilter('Sheets API',this)">Sheets</button>
@@ -769,12 +783,12 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <div class="pw-input-wrap">
         <input type="password" id="pinInput" placeholder="Password"
           oninput="App.onPwInput()" onkeydown="if(event.key==='Enter')App.submitPin()">
-        <button class="pw-eye" onclick="App.togglePwEye('pinInput',this)" tabindex="-1">👁</button>
+        <button class="pw-eye" onclick="_ready(()=>{App.togglePwEye('pinInput',this)})" tabindex="-1">👁</button>
       </div>
       <div id="pinError"></div>
-      <button class="btn-p" style="width:100%" onclick="App.submitPin()">Sign In</button>
-      <button class="btn-s" style="width:100%" onclick="App.cancelAdminPrompt()">✕ Cancel</button>
-      <button class="pw-forgot" onclick="App.showForgotForm()">Forgot password?</button>
+      <button class="btn-p" style="width:100%" onclick="_ready(()=>{App.submitPin()})">Sign In</button>
+      <button class="btn-s" style="width:100%" onclick="_ready(()=>{App.cancelAdminPrompt()})">✕ Cancel</button>
+      <button class="pw-forgot" onclick="_ready(()=>{App.showForgotForm()})">Forgot password?</button>
     </div>
 
     <!-- FORGOT PASSWORD FORM -->
@@ -782,8 +796,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <h3>🔑 Reset Password</h3>
       <p style="color:var(--text2);font-size:12px;text-align:center">A reset link will be sent to the configured admin email.</p>
       <div id="pinError2"></div>
-      <button class="btn-p" style="width:100%" onclick="App.sendResetEmail()">Send Reset Link</button>
-      <button class="pw-forgot" onclick="App.showLoginForm()">← Back to login</button>
+      <button class="btn-p" style="width:100%" onclick="_ready(()=>{App.sendResetEmail()})">Send Reset Link</button>
+      <button class="pw-forgot" onclick="_ready(()=>{App.showLoginForm()})">← Back to login</button>
     </div>
 
     <!-- SET/RESET PASSWORD FORM (shown from reset link or first setup) -->
@@ -793,7 +807,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <div class="pw-input-wrap">
         <input type="password" id="newPwInput" placeholder="New password"
           oninput="App.onNewPwInput()" onkeydown="if(event.key==='Enter')document.getElementById('confirmPwInput').focus()">
-        <button class="pw-eye" onclick="App.togglePwEye('newPwInput',this)" tabindex="-1">👁</button>
+        <button class="pw-eye" onclick="_ready(()=>{App.togglePwEye('newPwInput',this)})" tabindex="-1">👁</button>
       </div>
       <!-- Password strength indicator -->
       <div class="pw-strength" id="pwStrength">
@@ -805,11 +819,11 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
       <div class="pw-input-wrap">
         <input type="password" id="confirmPwInput" placeholder="Confirm password"
           oninput="App.onNewPwInput()" onkeydown="if(event.key==='Enter')App.saveNewPassword()">
-        <button class="pw-eye" onclick="App.togglePwEye('confirmPwInput',this)" tabindex="-1">👁</button>
+        <button class="pw-eye" onclick="_ready(()=>{App.togglePwEye('confirmPwInput',this)})" tabindex="-1">👁</button>
       </div>
       <div id="pinError3"></div>
-      <button class="btn-p" style="width:100%" id="saveNewPwBtn" onclick="App.saveNewPassword()" disabled>Set Password</button>
-      <button class="pw-forgot" onclick="App.cancelSetPassword()" id="backToLoginBtn">✕ Cancel</button>
+      <button class="btn-p" style="width:100%" id="saveNewPwBtn" onclick="_ready(()=>{App.saveNewPassword()})" disabled>Set Password</button>
+      <button class="pw-forgot" onclick="_ready(()=>{App.cancelSetPassword()})" id="backToLoginBtn">✕ Cancel</button>
     </div>
 
   </div>
@@ -822,7 +836,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     <h3 style="margin-bottom:10px;color:var(--amber,#f0a500)" id="regionOverlayTitle">Action Required</h3>
     <p style="font-size:12px;color:var(--text2);line-height:1.7;margin-bottom:16px" id="regionOverlayMsg"></p>
     <div id="regionOverlayList" style="text-align:left;background:var(--bg3);border-radius:8px;padding:10px;margin-bottom:16px;font-size:11px;color:var(--text2);max-height:180px;overflow-y:auto"></div>
-    <button class="btn-p" style="width:100%" onclick="App.regionOverlayConfirm()">Go to Zone Setup →</button>
+    <button class="btn-p" style="width:100%" onclick="_ready(()=>{App.regionOverlayConfirm()})">Go to Zone Setup →</button>
   </div>
 </div>
 
@@ -876,9 +890,9 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     
     <!-- Bottom action buttons -->
     <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
-      <button class="btn-s" style="font-size:12px;order:2" onclick="Admin._cancelUnsavedOverlay()">← Back to Editing</button>
-      <button class="btn-s" style="font-size:12px;order:1" onclick="Admin._confirmUnsavedChanges()">Confirm</button>
-      <button class="btn-p" style="flex:1;font-size:13px;font-weight:700;order:0" onclick="Admin._saveAllChanges()">💾 SAVE ALL</button>
+      <button class="btn-s" style="font-size:12px;order:2" onclick="_ready(()=>{Admin._cancelUnsavedOverlay()})">← Back to Editing</button>
+      <button class="btn-s" style="font-size:12px;order:1" onclick="_ready(()=>{Admin._confirmUnsavedChanges()})">Confirm</button>
+      <button class="btn-p" style="flex:1;font-size:13px;font-weight:700;order:0" onclick="_ready(()=>{Admin._saveAllChanges()})">💾 SAVE ALL</button>
     </div>
   </div>
 </div>
@@ -887,22 +901,22 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
 <div id="adminOverlay">
   <div id="adminPanel">
     <div class="adm-hdr">
-      <button class="nav-tog" onclick="Admin.toggleNav()">☰</button>
+      <button class="nav-tog" onclick="_ready(()=>{Admin.toggleNav()})">☰</button>
       <h2>⚙ Admin Configuration</h2>
-      <button onclick="Admin.close()">✕</button>
+      <button onclick="_ready(()=>{Admin.close()})">✕</button>
     </div>
     <div class="adm-body">
       <nav id="adminNav">
-        <div class="anav-item" data-sec="datasource" onclick="Admin.showSec('datasource')"><span class="ico">📁</span>Data Source</div>
-        <div class="anav-item" data-sec="zone" onclick="Admin.showSec('zone')"><span class="ico">🏛</span>Zone</div>
-        <div class="anav-item" data-sec="periods" onclick="Admin.showSec('periods')"><span class="ico">📅</span>Time Periods</div>
-        <div class="anav-item" data-sec="holidays" onclick="Admin.showSec('holidays')"><span class="ico">📆</span>Holidays</div>
-        <div class="anav-item" data-sec="sheets" onclick="Admin.showSec('sheets')"><span class="ico">📋</span>Sheets &amp; Params</div>
-        <div class="anav-item" data-sec="upload" onclick="Admin.showSec('upload')"><span class="ico">☁</span>Upload &amp; Summary</div>
-        <div class="anav-item" data-sec="security" onclick="Admin.showSec('security')"><span class="ico">🔒</span>Security</div>
-        <div class="anav-item" data-sec="derived" onclick="Admin.showSec('derived')"><span class="ico">🔢</span>Derived Params</div>
-        <div class="anav-item" data-sec="paramorder" onclick="Admin.showSec('paramorder')"><span class="ico">↕</span>Param Order</div>
-        <div class="anav-item" data-sec="adminlog" onclick="Admin.showSec('adminlog');AdminLogUI.open()"><span class="ico">🔍</span>Admin Log</div>
+        <div class="anav-item" data-sec="datasource" onclick="_ready(()=>{Admin.showSec('datasource')})"><span class="ico">📁</span>Data Source</div>
+        <div class="anav-item" data-sec="zone" onclick="_ready(()=>{Admin.showSec('zone')})"><span class="ico">🏛</span>Zone</div>
+        <div class="anav-item" data-sec="periods" onclick="_ready(()=>{Admin.showSec('periods')})"><span class="ico">📅</span>Time Periods</div>
+        <div class="anav-item" data-sec="holidays" onclick="_ready(()=>{Admin.showSec('holidays')})"><span class="ico">📆</span>Holidays</div>
+        <div class="anav-item" data-sec="sheets" onclick="_ready(()=>{Admin.showSec('sheets')})"><span class="ico">📋</span>Sheets &amp; Params</div>
+        <div class="anav-item" data-sec="upload" onclick="_ready(()=>{Admin.showSec('upload')})"><span class="ico">☁</span>Upload &amp; Summary</div>
+        <div class="anav-item" data-sec="security" onclick="_ready(()=>{Admin.showSec('security')})"><span class="ico">🔒</span>Security</div>
+        <div class="anav-item" data-sec="derived" onclick="_ready(()=>{Admin.showSec('derived')})"><span class="ico">🔢</span>Derived Params</div>
+        <div class="anav-item" data-sec="paramorder" onclick="_ready(()=>{Admin.showSec('paramorder')})"><span class="ico">↕</span>Param Order</div>
+        <div class="anav-item" data-sec="adminlog" onclick="_ready(()=>{Admin.showSec('adminlog');AdminLogUI.open()})"><span class="ico">🔍</span>Admin Log</div>
       </nav>
       <div class="adm-secs">
 
@@ -911,8 +925,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <h3>Data Source</h3>
           <p class="desc">BP: <strong>BP_DD.MM.YYYY.xlsx</strong> &nbsp; RD: <strong>RD_DD.MM.YYYY.xlsx</strong></p>
           <div class="src-toggle">
-            <button class="src-toggle-btn active" id="srcBtnDrive" onclick="Admin.setSource('drive')">☁ Google Drive</button>
-            <button class="src-toggle-btn" id="srcBtnLocal" onclick="Admin.setSource('local')">💻 Local Folder</button>
+            <button class="src-toggle-btn active" id="srcBtnDrive" onclick="_ready(()=>{Admin.setSource('drive')})">☁ Google Drive</button>
+            <button class="src-toggle-btn" id="srcBtnLocal" onclick="_ready(()=>{Admin.setSource('local')})">💻 Local Folder</button>
           </div>
           <!-- GOOGLE DRIVE PANEL -->
           <div class="src-panel active" id="srcPanelDrive">
@@ -964,23 +978,23 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <div class="src-panel" id="srcPanelLocal">
             <div style="margin-bottom:14px">
               <div class="fg"><label>BP Files Folder</label></div>
-              <button class="btn-p" onclick="Admin.selectFolder('bp')">📂 Select BP Folder</button>
+              <button class="btn-p" onclick="_ready(()=>{Admin.selectFolder('bp')})">📂 Select BP Folder</button>
               <div class="folder-row" id="bpFolderRow" style="display:none"><span>📁</span><span id="bpFolderName">—</span></div>
               <div class="prog-wrap" id="bpProg" style="display:none">
                 <div class="prog-bar"><div class="prog-fill" id="bpFill" style="width:0%"></div></div>
                 <div class="prog-lbl" id="bpLbl"></div>
               </div>
-              <button class="btn-s" style="margin-top:8px;font-size:11px" onclick="Admin.scanFolder('bp')">🔄 Scan & Import BP</button>
+              <button class="btn-s" style="margin-top:8px;font-size:11px" onclick="_ready(()=>{Admin.scanFolder('bp')})">🔄 Scan & Import BP</button>
             </div>
             <div style="border-top:1px solid var(--border);padding-top:14px">
               <div class="fg"><label>RD Files Folder</label></div>
-              <button class="btn-p" onclick="Admin.selectFolder('rd')">📂 Select RD Folder</button>
+              <button class="btn-p" onclick="_ready(()=>{Admin.selectFolder('rd')})">📂 Select RD Folder</button>
               <div class="folder-row" id="rdFolderRow" style="display:none"><span>📁</span><span id="rdFolderName">—</span></div>
               <div class="prog-wrap" id="rdProg" style="display:none">
                 <div class="prog-bar"><div class="prog-fill" id="rdFill" style="width:0%"></div></div>
                 <div class="prog-lbl" id="rdLbl"></div>
               </div>
-              <button class="btn-s" style="margin-top:8px;font-size:11px" onclick="Admin.scanFolder('rd')">🔄 Scan & Import RD</button>
+              <button class="btn-s" style="margin-top:8px;font-size:11px" onclick="_ready(()=>{Admin.scanFolder('rd')})">🔄 Scan & Import RD</button>
             </div>
           </div>
           <!-- SHARED FILE INDEX -->
@@ -1087,7 +1101,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="asec" id="asec-periods">
           <h3>Time Period Columns</h3>
           <p class="desc">Each period and its change columns are independent entries — drag to reorder freely. Value columns show the actual figure; change columns always compare against Latest.</p>
-          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="Admin.restorePeriods()">↺ Restore Defaults</button>
+          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="_ready(()=>{Admin.restorePeriods()})">↺ Restore Defaults</button>
           <div id="periodCfgList"></div>
         </div>
 
@@ -1095,7 +1109,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="asec" id="asec-holidays">
           <h3>Holiday Configuration</h3>
           <p class="desc">Select which Saturdays are holidays. Sundays are always holidays.</p>
-          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="Admin.restoreHolidays()">↺ Restore Defaults</button>
+          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="_ready(()=>{Admin.restoreHolidays()})">↺ Restore Defaults</button>
           <div class="fg">
             <label>Holiday Saturdays</label>
             <div class="chk-grp" id="satChks">
@@ -1113,7 +1127,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="asec" id="asec-sheets">
           <h3>Sheets &amp; Parameters</h3>
           <p class="desc">Enable sheets then configure columns. Uncheck a sheet to hide its parameters. <span class="src-bp">BP</span> = BP file &nbsp;<span class="src-rd">RD</span> = RD file. Drag rows to reorder.</p>
-          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="Admin.restoreSheets()">↺ Restore Defaults</button>
+          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="_ready(()=>{Admin.restoreSheets()})">↺ Restore Defaults</button>
           <div id="sheetParamCfg"></div>
         </div>
 
@@ -1170,7 +1184,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <div style="border-top:1px solid var(--border);padding-top:14px">
             <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Drive Index</div>
             <div id="driveIndexStats" style="font-size:11px;color:var(--text3)">—</div>
-            <button class="btn-s" id="refreshIndexBtn" style="margin-top:8px;font-size:11px;width:100%" onclick="Admin.refreshFileIndex()">🔄 Refresh File Index</button>
+            <button class="btn-s" id="refreshIndexBtn" style="margin-top:8px;font-size:11px;width:100%" onclick="_ready(()=>{Admin.refreshFileIndex()})">🔄 Refresh File Index</button>
             <div id="refreshIndexStatus" style="font-size:10px;color:var(--text3);margin-top:4px;min-height:14px"></div>
           </div>
         </div>
@@ -1204,7 +1218,7 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
           <!-- Change password -->
           <div style="border-top:1px solid var(--border);padding-top:14px;margin-top:4px">
             <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.06em">Change Password</div>
-            <button class="btn-p" style="width:100%" onclick="Admin.openChangePassword()">🔑 Change Admin Password</button>
+            <button class="btn-p" style="width:100%" onclick="_ready(()=>{Admin.openChangePassword()})">🔑 Change Admin Password</button>
           </div>
           <div class="sync-status-bar" id="securityMsg" style="margin-top:10px"></div>
         </div>
@@ -1213,16 +1227,16 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
         <div class="asec" id="asec-derived">
           <h3>Derived Parameters</h3>
           <p class="desc">Create calculated parameters using addition and subtraction.</p>
-          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="Admin.restoreDerived()">↺ Restore Defaults</button>
+          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="_ready(()=>{Admin.restoreDerived()})">↺ Restore Defaults</button>
           <div id="derivedList"></div>
-          <button class="btn-s" style="margin-top:8px" onclick="Admin.addDerived()">+ Add Derived Parameter</button>
+          <button class="btn-s" style="margin-top:8px" onclick="_ready(()=>{Admin.addDerived()})">+ Add Derived Parameter</button>
         </div>
 
         <!-- PARAM ORDER -->
         <div class="asec" id="asec-paramorder">
           <h3>Parameter Order</h3>
           <p class="desc">Drag to set the order in which parameters appear in all dashboard tabs. Includes all BP, RD and derived parameters.</p>
-          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="Admin.restoreParamOrder()">↺ Restore Defaults</button>
+          <button class="btn-s" style="font-size:11px;margin-bottom:12px" onclick="_ready(()=>{Admin.restoreParamOrder()})">↺ Restore Defaults</button>
           <div id="paramOrderList"></div>
         </div>
 
@@ -1276,8 +1290,8 @@ html,body{height:100%;font-family:'IBM Plex Sans',sans-serif;background:var(--bg
     </div>
     <div class="adm-ftr">
       <div class="smsg" id="adminMsg"></div>
-      <button class="btn-s" onclick="Admin.close()">Close</button>
-      <button class="btn-p" onclick="Admin.saveAll()">💾 Save &amp; Apply</button>
+      <button class="btn-s" onclick="_ready(()=>{Admin.close()})">Close</button>
+      <button class="btn-p" onclick="_ready(()=>{Admin.saveAll()})">💾 Save &amp; Apply</button>
     </div>
   </div>
 </div>
@@ -11035,6 +11049,10 @@ const App = {
 
     // Dashboard is already visible — just ensure landing is hidden
     this.hideLanding();
+    // Flush any clicks that fired before App was ready
+    window._appReady = true;
+    (window._q || []).forEach(fn => { try { fn(); } catch(e) {} });
+    window._q = [];
 
     // ── Step 7: Background sync (token-gated, silent) ─────────
     setTimeout(() => this._backgroundSync(zone), 1200);
