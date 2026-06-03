@@ -1593,9 +1593,9 @@ window.fetch = async function(url, opts) {
 
     // For GitHub config and Drive summary fetches — clone and log key response fields
     // so Activity Log shows what was actually received, not just the HTTP status.
-    const isGitHubConfig = entity === 'GitHub' && s.includes('config.json');
-    const isDriveSummary = entity === 'Drive' && s.includes('alt=media') &&
-                           !s.includes('ADMINLOG') && !s.includes('spreadsheets');
+    const isGitHubConfig = entity === 'GitHub' && url.includes('config.json');
+    const isDriveSummary = entity === 'Drive' && url.includes('alt=media') &&
+                           !url.includes('ADMINLOG') && !url.includes('spreadsheets');
 
     if (ok && (isGitHubConfig || isDriveSummary)) {
       // Clone so the original response stream is not consumed
