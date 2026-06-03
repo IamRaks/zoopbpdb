@@ -718,7 +718,7 @@
       "rdConvertedVersion": ""
     }
   },
-  "_savedAt": "2026-06-03T17:08:24.736Z",
+  "_savedAt": "2026-06-03T19:26:07.773Z",
   "bpSchema": {
     "sourceDate": "2026-05-24",
     "ros": [
@@ -770,7 +770,7 @@
       "Total Advance (Core)::Union Mortgage",
       "Total Advance (Core)::Union Personal"
     ],
-    "setAt": "2026-06-03T06:02:49.227Z"
+    "setAt": "2026-06-03T19:25:34.997Z"
   },
   "rdSchema": {
     "sourceDate": "2026-05-24",
@@ -796,7 +796,7 @@
         "TDA COUNT"
       ]
     },
-    "setAt": "2026-06-03T06:02:51.269Z"
+    "setAt": "2026-06-03T19:25:37.335Z"
   },
   "_ghPat": "__obf__LiE5FgA/PAUiASo4BQoGeHsOEBozLzF7IQQfCyU9LRMiLXl7AzswEA=="
 }
