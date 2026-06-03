@@ -10637,6 +10637,8 @@ const AppLog = {
   _MAX: 300,
   _filter: 'all',
 
+  _writeTimer: null,
+
   add(entity, action, status, detail) {
     status = status || 'INF';
     const entry = { ts: new Date(), entity, action, status, detail: detail || '' };
@@ -10644,25 +10646,48 @@ const AppLog = {
     if (this._entries.length > this._MAX) this._entries.shift();
     this._renderEntry(entry);
     this._updateCount();
-    DB.get('config','appLog').then(log => {
-      const arr = log || [];
-      arr.push({ ts: entry.ts.toISOString(), entity, action, status, detail: entry.detail });
-      if (arr.length > 500) arr.splice(0, arr.length - 500);
-      DB.set('config','appLog', arr);
-    }).catch(()=>{});
+    // Debounced batch write — avoids race condition where rapid sequential
+    // add() calls each read the same stale DB array and overwrite each other.
+    // All entries accumulated in _entries are written together after 200ms idle.
+    if (this._writeTimer) clearTimeout(this._writeTimer);
+    this._writeTimer = setTimeout(() => {
+      if (!DB.db) return; // DB not open yet — entries safe in _entries array
+      const snapshot = this._entries.slice(-500).map(e => ({
+        ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
+        entity: e.entity, action: e.action, status: e.status, detail: e.detail || ''
+      }));
+      DB.set('config','appLog', snapshot).catch(()=>{});
+      this._writeTimer = null;
+    }, 200);
   },
 
   async loadPersisted() {
     try {
       const saved = await DB.get('config','appLog');
-      if (!saved?.length) return;
-      const parsed = saved.map(e => ({
-        ts: new Date(e.ts), entity: e.entity, action: e.action,
-        status: e.status, detail: e.detail || ''
-      }));
-      this._entries = [...parsed, ...this._entries].slice(-this._MAX);
+      if (saved?.length) {
+        const parsed = saved.map(e => ({
+          ts: new Date(e.ts), entity: e.entity, action: e.action,
+          status: e.status, detail: e.detail || ''
+        }));
+        // Merge persisted entries with any already added in this session
+        // (entries added before loadPersisted was called go to the end)
+        const sessionEntries = this._entries;
+        this._entries = [...parsed, ...sessionEntries].slice(-this._MAX);
+      }
       this._renderAll();
     } catch(e) {}
+    // Flush any entries accumulated before DB was ready
+    if (this._writeTimer) {
+      clearTimeout(this._writeTimer);
+      this._writeTimer = null;
+    }
+    if (DB.db && this._entries.length) {
+      const snapshot = this._entries.slice(-500).map(e => ({
+        ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
+        entity: e.entity, action: e.action, status: e.status, detail: e.detail || ''
+      }));
+      DB.set('config','appLog', snapshot).catch(()=>{});
+    }
   },
 
   setFilter(filter, btn) {
@@ -10688,7 +10713,7 @@ const AppLog = {
       <span class="${cls}" style="font-weight:700">${badge} </span>
       <span style="color:var(--accent)">${e.entity}</span>
       <span style="color:var(--text2)"> › ${e.action}</span>
-      ${e.detail?`<div style="padding-left:14px;color:var(--text3);font-size:10px">${e.detail}</div>`:''}
+      ${e.detail?`<div style="padding-left:14px;color:var(--text3);font-size:10px;white-space:pre-wrap;word-break:break-all">${e.detail.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`:''}
     </div>`;
   },
 
