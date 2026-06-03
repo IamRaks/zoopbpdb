@@ -10860,297 +10860,322 @@ const App = {
   },
 
   async init(){
-    // Phase 1: Local storage init — wrapped so DB failure doesn't kill everything.
-    // If IndexedDB is blocked or unavailable, continue with empty config (graceful).
+
+    // ══════════════════════════════════════════════════════════════════
+    // DIAGNOSTIC MODE — Dashboard render is intentionally blocked.
+    // All checks complete first. Results visible in Activity Log (📋).
+    // ══════════════════════════════════════════════════════════════════
+
+    // ── CHECK 1: IndexedDB ────────────────────────────────────────────
+    AppLog.add('App', '══ CHECK 1: IndexedDB ══', 'RUN');
+    let dbOK = false;
     try {
       await DB.open();
+      dbOK = true;
+      AppLog.add('App', 'IndexedDB opened', 'OK', 'BPDash_v5 ready');
     } catch(e) {
-      console.error('[Phase 1] DB.open failed:', e.message);
-      const st = document.getElementById('landingStatusTxt');
-      if (st) st.textContent = '⚠ Storage error — loading in limited mode';
-      // Continue without DB — Cfg.d will use defaults
+      AppLog.add('App', 'IndexedDB FAILED to open', 'ERR',
+        `${e.message} — app will run with no persistent storage`);
     }
-    try {
-      await Cfg.load();
-    } catch(e) {
-      console.error('[Phase 1] Cfg.load failed:', e.message);
-      // Continue with default config
-    }
-    try {
-      await AppLog.loadPersisted();
-    } catch(e) {
-      console.error('[Phase 1] AppLog.loadPersisted failed:', e.message);
-      // Non-critical — continue
-    }
-    AppLog.add('App', 'Starting up', 'RUN', navigator.userAgent.substring(0,60));
 
-    // Log the full config state loaded from IndexedDB
-    const _cfgSnap = Cfg.d || {};
-    const _ids0 = _cfgSnap.summaryFileIds || {};
-    AppLog.add('App', 'IndexedDB config state', 'INF',
-      `activeZone=${_cfgSnap.activeZone||'null'} | ` +
-      `summaryIds.recent=${_ids0.recent?.substring(0,12)||'null'} | ` +
-      `summaryIds.history=${_ids0.history?.substring(0,12)||'null'} | ` +
-      `columnOrder=${(_cfgSnap.columnOrder||[]).filter(c=>c.enabled).length} enabled cols | ` +
-      `paramOrder=${(_cfgSnap.paramOrder||[]).length} params | ` +
-      `sheets=${Object.keys(_cfgSnap.sheets||{}).filter(k=>(_cfgSnap.sheets[k]||{}).enabled).length} enabled sheets | ` +
-      `adminPasswordHash=${_cfgSnap.adminPasswordHash?'SET':'NOT SET'} | ` +
-      `gApiKey=${_cfgSnap.gApiKey?'SET':'NOT SET'} | ` +
-      `ghPat=${_cfgSnap.ghPat?'SET':'NOT SET'}`);
+    // ── CHECK 2: Cached config from IndexedDB ────────────────────────
+    AppLog.add('App', '══ CHECK 2: IndexedDB Config ══', 'RUN');
+    try { await Cfg.load(); } catch(e) {
+      AppLog.add('App', 'Cfg.load failed', 'ERR', e.message);
+    }
+    try { await AppLog.loadPersisted(); } catch(e) {}
 
-    // Config MUST be awaited before reading summaryFileIds.
-    // summaryFileIds lives in config.json on GitHub. If local IndexedDB has an
-    // old or empty config (new device, cleared browser data), summaryFileIds will
-    // be null unless we wait for GitHub to respond first.
-    // A 6s timeout ensures we don't block forever on a slow/unreachable GitHub.
-    AppLog.add('GitHub', 'Loading config.json', 'RUN');
-    // this.showLanding('Checking for latest config...', 8); — removed, landing hidden by default
+    const cfg1 = Cfg.d || {};
+    const ids1 = cfg1.summaryFileIds || {};
+    AppLog.add('App', 'IndexedDB config snapshot', ids1.recent ? 'OK' : 'WARN',
+      `activeZone        = ${cfg1.activeZone || 'NOT SET'}
+` +
+      `summaryIds.recent  = ${ids1.recent?.substring(0,20) || 'NULL'}
+` +
+      `summaryIds.history = ${ids1.history?.substring(0,20) || 'NULL'}
+` +
+      `gApiKey            = ${cfg1.gApiKey ? 'SET' : 'NOT SET'}
+` +
+      `ghPat              = ${cfg1.ghPat ? 'SET' : 'NOT SET'}
+` +
+      `adminPasswordHash  = ${cfg1.adminPasswordHash ? 'SET' : 'NOT SET'}
+` +
+      `columnOrder(enabled) = ${(cfg1.columnOrder||[]).filter(c=>c.enabled).length}
+` +
+      `paramOrder           = ${(cfg1.paramOrder||[]).length}
+` +
+      `sheets(enabled)      = ${Object.keys(cfg1.sheets||{}).filter(k=>(cfg1.sheets[k]||{}).enabled).length}
+` +
+      `periods(enabled)     = ${Object.values(cfg1.periods||{}).filter(p=>p.enabled).length}`);
+
+    // ── CHECK 3: GitHub config.json ──────────────────────────────────
+    AppLog.add('App', '══ CHECK 3: GitHub config.json ══', 'RUN',
+      `URL = https://raw.githubusercontent.com/IamRaks/zoopbpdb/main/config.json`);
+    let githubOK = false;
+    let cfgUpdated = false;
     try {
-      const cfgUpdated = await Promise.race([
+      cfgUpdated = await Promise.race([
         ConfigSync.autoLoad(),
-        new Promise(res => setTimeout(() => res(false), 6000))
+        new Promise(res => setTimeout(() => {
+          AppLog.add('GitHub', 'config.json fetch timed out at 6s', 'WARN',
+            'GitHub unreachable or too slow — using cached config');
+          res(false);
+        }, 6000))
       ]);
-      if (cfgUpdated) {
-        await Cfg.load();
-        const _cfgGH = Cfg.d || {};
-        const _idsGH = _cfgGH.summaryFileIds || {};
-        AppLog.add('GitHub', 'Config loaded and applied from GitHub', 'OK',
-          `activeZone=${_cfgGH.activeZone||'null'} | ` +
-          `summaryIds.recent=${_idsGH.recent?.substring(0,12)||'null'} | ` +
-          `summaryIds.history=${_idsGH.history?.substring(0,12)||'null'} | ` +
-          `columnOrder=${(_cfgGH.columnOrder||[]).filter(c=>c.enabled).length} enabled | ` +
-          `paramOrder=${(_cfgGH.paramOrder||[]).length} | ` +
-          `sheets=${Object.keys(_cfgGH.sheets||{}).filter(k=>(_cfgGH.sheets[k]||{}).enabled).length} enabled`);
-      } else {
-        const _cfgTO = Cfg.d || {};
-        const _idsTO = _cfgTO.summaryFileIds || {};
-        AppLog.add('GitHub', 'Config up to date or timed out — using cached config', 'INF',
-          `summaryIds.recent=${_idsTO.recent?.substring(0,12)||'null'} | ` +
-          `columnOrder=${(_cfgTO.columnOrder||[]).filter(c=>c.enabled).length} enabled | ` +
-          `paramOrder=${(_cfgTO.paramOrder||[]).length}`);
-      }
+      githubOK = true;
     } catch(e) {
-      AppLog.add('GitHub', 'Config load failed — using cached config', 'WARN', e.message);
+      AppLog.add('GitHub', 'config.json fetch threw exception', 'ERR', e.message);
     }
 
-    // Handle password reset link
-    const urlParams = new URLSearchParams(window.location.search);
-    const resetToken = urlParams.get('reset');
-    if (resetToken) {
-      const storedToken = Cfg.get('adminResetToken');
-      const expiry = Cfg.get('adminResetExpiry') || 0;
-      if (storedToken && resetToken === storedToken && Date.now() < expiry) {
-        document.getElementById('pinOverlay').classList.add('open');
-        App.showSetPasswordForm(false);
-        document.getElementById('setPasswordTitle').textContent = '🔑 Reset Password';
-        document.getElementById('backToLoginBtn').style.display = 'none';
-      } else {
-        document.getElementById('pinOverlay').classList.add('open');
-        App.showLoginForm();
-        document.getElementById('pinError').textContent = 'Reset link has expired or is invalid.';
+    if (cfgUpdated) {
+      try { await Cfg.load(); } catch(e) {
+        AppLog.add('GitHub', 'Cfg.load after GitHub update failed', 'ERR', e.message);
       }
-      window.history.replaceState({}, '', window.location.pathname);
     }
 
+    const cfg2 = Cfg.d || {};
+    const ids2 = cfg2.summaryFileIds || {};
+    AppLog.add('GitHub', `config.json result — ${cfgUpdated ? 'UPDATED' : 'no change / timed out'}`,
+      cfgUpdated ? 'OK' : 'INF',
+      `activeZone        = ${cfg2.activeZone || 'NOT SET'}
+` +
+      `summaryIds.recent  = ${ids2.recent?.substring(0,20) || 'NULL'}
+` +
+      `summaryIds.history = ${ids2.history?.substring(0,20) || 'NULL'}
+` +
+      `gApiKey            = ${cfg2.gApiKey ? 'SET' : 'NOT SET'}
+` +
+      `ghPat              = ${cfg2.ghPat ? 'SET' : 'NOT SET'}
+` +
+      `columnOrder(enabled) = ${(cfg2.columnOrder||[]).filter(c=>c.enabled).length}
+` +
+      `paramOrder           = ${(cfg2.paramOrder||[]).length}
+` +
+      `sheets(enabled)      = ${Object.keys(cfg2.sheets||{}).filter(k=>(cfg2.sheets[k]||{}).enabled).length}
+` +
+      `periods(enabled)     = ${Object.values(cfg2.periods||{}).filter(p=>p.enabled).length}`);
+
+    // ── CHECK 4: Summary file IDs ────────────────────────────────────
+    const summaryIds = Cfg.get('summaryFileIds') || {};
+    const apiKey = Cfg.get('gApiKey') || '';
+    const zone = Cfg.get('activeZone') || '';
+
+    AppLog.add('App', '══ CHECK 4: Summary File IDs ══',
+      summaryIds.recent ? 'OK' : 'ERR',
+      `recent  = ${summaryIds.recent  || 'NULL — cannot fetch summary without this'}
+` +
+      `history = ${summaryIds.history || 'NULL'}
+` +
+      `meta    = ${summaryIds.meta    || 'NULL'}
+` +
+      `gApiKey = ${apiKey ? 'SET (needed for public access)' : 'NOT SET — public fetch will fail'}
+` +
+      `activeZone = ${zone || 'NOT SET — dashboard cannot render without this'}`);
+
+    // ── CHECK 5: Drive summary fetch ─────────────────────────────────
+    AppLog.add('App', '══ CHECK 5: Drive Summary Fetch ══', 'RUN');
+    let summaryLoaded = false;
+    let summaryDates = [];
+
+    if (!summaryIds.recent) {
+      AppLog.add('Drive', 'Skipping summary fetch — summaryIds.recent is NULL', 'ERR',
+        'Admin must run Force Rebuild to generate summary and push to Drive');
+    } else if (!apiKey) {
+      AppLog.add('Drive', 'Skipping public fetch — gApiKey is NOT SET', 'ERR',
+        'Admin must configure Google API key in Admin → Config');
+    } else {
+      // Public fetch attempt
+      const pubUrl = `https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=${apiKey}&t=${Date.now()}`;
+      AppLog.add('Drive', 'Fetching BP_SUMMARY_RECENT.json (public)', 'RUN',
+        `fileId = ${summaryIds.recent.substring(0,20)}
+` +
+        `apiKey = AIza... (${apiKey.length} chars)
+` +
+        `url    = ...${summaryIds.recent.substring(0,12)}?alt=media&key=AIza...`);
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => {
+          AppLog.add('Drive', 'Summary fetch connection timed out at 10s', 'ERR',
+            'Drive API did not respond within 10 seconds');
+          ctrl.abort();
+        }, 10000);
+        const r = await fetch(pubUrl, { signal: ctrl.signal });
+        clearTimeout(t);
+        AppLog.add('Drive', `Summary fetch HTTP response`, r.ok ? 'OK' : 'ERR',
+          `HTTP ${r.status} ${r.statusText}
+` +
+          (!r.ok && r.status === 403 ? 'HTTP 403 — file not publicly readable or API key invalid
+' : '') +
+          (!r.ok && r.status === 404 ? 'HTTP 404 — file not found on Drive (stale ID?)
+' : '') +
+          (!r.ok && r.status === 400 ? 'HTTP 400 — bad request, API key may be malformed
+' : '') +
+          `fileId = ${summaryIds.recent.substring(0,20)}`);
+
+        if (r.ok) {
+          AppLog.add('Drive', 'Reading summary response body', 'RUN',
+            'Racing body read against 8s timeout');
+          try {
+            const text = await Promise.race([
+              r.text(),
+              new Promise((_,rej) => setTimeout(()=>rej(new Error('body read timed out at 8s')), 8000))
+            ]);
+            AppLog.add('Drive', 'Response body received', 'OK',
+              `size = ${(text.length/1024).toFixed(1)} KB`);
+            try {
+              const chunk = JSON.parse(text);
+              const allDates = Object.keys(chunk.dates||{});
+              const zoneDates = allDates.filter(d => chunk.dates[d]?.['__zone__']);
+              summaryDates = zoneDates;
+              AppLog.add('Drive', 'Summary JSON parsed', 'OK',
+                `chunk       = ${chunk._meta?.chunk || '?'}
+` +
+                `zone        = ${chunk._meta?.zone || '?'}
+` +
+                `totalDates  = ${allDates.length}
+` +
+                `withZone    = ${zoneDates.length}
+` +
+                `withoutZone = ${allDates.length - zoneDates.length}
+` +
+                `dateRange   = ${[...allDates].sort()[0]||'none'} → ${[...allDates].sort().slice(-1)[0]||'none'}
+` +
+                `size        = ${(text.length/1024).toFixed(1)} KB`);
+
+              if (zoneDates.length > 0) {
+                await ChartStore.mergeChunk(zone, chunk);
+                summaryLoaded = true;
+                DataIntegrity._lastSummaryFetch = Date.now();
+                const storeAfter = await ChartStore._getStore(zone);
+                const storeAll = Object.keys(storeAfter?.dates||{});
+                const storeZone = storeAll.filter(d=>storeAfter.dates[d]?.['__zone__']);
+                AppLog.add('Drive', 'Summary merged into IndexedDB ChartStore', 'OK',
+                  `newDates    = ${allDates.length}
+` +
+                  `storeTotal  = ${storeAll.length}
+` +
+                  `storeWithZone = ${storeZone.length}
+` +
+                  `storeRange  = ${[...storeZone].sort()[0]||'none'} → ${[...storeZone].sort().slice(-1)[0]||'none'}`);
+              } else {
+                AppLog.add('Drive', 'Summary has NO dates with __zone__ key', 'ERR',
+                  `totalDates=${allDates.length} but none have __zone__ — ` +
+                  `summary was built incorrectly. Admin must Force Rebuild.`);
+              }
+            } catch(pe) {
+              AppLog.add('Drive', 'Summary JSON parse failed', 'ERR',
+                `${pe.message}
+` +
+                `First 100 chars of body: ${text.substring(0,100)}`);
+            }
+          } catch(be) {
+            AppLog.add('Drive', 'Summary body read failed', 'ERR', be.message);
+          }
+        }
+      } catch(fe) {
+        AppLog.add('Drive', 'Summary fetch exception', 'ERR',
+          `${fe.message}
+` +
+          (fe.name === 'AbortError' ? 'Connection was aborted (timeout)' : ''));
+      }
+    }
+
+    // ── CHECK 6: IndexedDB ChartStore state ──────────────────────────
+    AppLog.add('App', '══ CHECK 6: ChartStore (IndexedDB) State ══', 'RUN');
+    const store = await ChartStore._getStore(zone).catch(() => null);
+    const storeAll = Object.keys(store?.dates||{});
+    const storeZone = storeAll.filter(d => store?.dates[d]?.['__zone__']);
+    AppLog.add('App', 'ChartStore state', storeZone.length > 0 ? 'OK' : 'ERR',
+      `zone              = ${zone || 'NOT SET'}
+` +
+      `totalDates        = ${storeAll.length}
+` +
+      `datesWithZone     = ${storeZone.length}
+` +
+      `datesWithoutZone  = ${storeAll.length - storeZone.length}
+` +
+      `dateRange         = ${[...storeZone].sort()[0]||'none'} → ${[...storeZone].sort().slice(-1)[0]||'none'}
+` +
+      `latestDate        = ${[...storeZone].sort().slice(-1)[0] || 'NONE — dashboard cannot render'}`);
+
+    // ── CHECK 7: Dashboard dependencies ──────────────────────────────
+    AppLog.add('App', '══ CHECK 7: Dashboard Dependencies ══', 'RUN');
+    const cfg3 = Cfg.d || {};
+    const colDefs = (cfg3.columnOrder||[]).filter(c=>c.enabled);
+    const paramDefs = cfg3.paramOrder||[];
+    const sheets = Object.keys(cfg3.sheets||{}).filter(k=>(cfg3.sheets[k]||{}).enabled);
+    const periods = Object.entries(cfg3.periods||{}).filter(([,p])=>p.enabled);
+    const latestInStore = [...storeZone].sort().slice(-1)[0] || null;
+
+    const issues = [];
+    if (!zone)                       issues.push('activeZone NOT SET');
+    if (storeZone.length === 0)      issues.push('ChartStore has no dates with __zone__');
+    if (colDefs.length === 0)        issues.push('columnOrder has 0 enabled columns — table will be empty');
+    if (paramDefs.length === 0)      issues.push('paramOrder has 0 params — table will have no rows');
+    if (sheets.length === 0)         issues.push('sheets has 0 enabled sheets — no parameters available');
+    if (periods.length === 0)        issues.push('periods has 0 enabled periods — no date columns');
+    if (!latestInStore)              issues.push('no latest date available — Dashboard.calcPeriodDates will return empty');
+
+    AppLog.add('App', 'Dashboard dependency check',
+      issues.length === 0 ? 'OK' : 'ERR',
+      `activeZone          = ${zone || 'NOT SET'}
+` +
+      `columnOrder(enabled)= ${colDefs.length}
+` +
+      `paramOrder          = ${paramDefs.length}
+` +
+      `sheets(enabled)     = ${sheets.length}
+` +
+      `periods(enabled)    = ${periods.length}
+` +
+      `latestDateInStore   = ${latestInStore || 'NONE'}
+` +
+      (issues.length ? `
+ISSUES FOUND:
+${issues.map(i=>'  ✗ '+i).join('
+')}` :
+        '
+  ✓ All dependencies present — dashboard should render'));
+
+    // ── CHECK 8: Summary — complete ──────────────────────────────────
+    AppLog.add('App', '══ DIAGNOSTIC COMPLETE ══',
+      issues.length === 0 && summaryLoaded ? 'OK' : 'ERR',
+      `dbOK=${dbOK} | githubOK=${githubOK} | summaryLoaded=${summaryLoaded} | ` +
+      `issues=${issues.length}
+` +
+      (issues.length ? `Blocking issues:
+${issues.map(i=>'  ✗ '+i).join('
+')}` :
+        'All checks passed — dashboard render is currently BLOCKED for diagnostic purposes.
+' +
+        'Remove the diagnostic block in App.init() to enable rendering.'));
+
+    // ── UI: apply theme and wiring regardless of data state ──────────
     document.documentElement.setAttribute('data-theme', Cfg.get('theme') || 'dark');
     this.updateThemeBtn();
     document.querySelectorAll('.tab-btn').forEach(b =>
       b.addEventListener('click', () => Dashboard.onTabClick(b.dataset.tab))
     );
-    const zone = Cfg.get('activeZone') || '';
     document.getElementById('navZone').textContent = zone || 'No Zone';
     const _zl = document.getElementById('navZoneLine');
     if (_zl) _zl.textContent = zone || '—';
 
-    // Init carousel — fire-and-forget so it never blocks app startup.
-    // The carousel is decorative; a slow or failed GitHub fetch must not
-    // freeze the dashboard. The fallback branded slide renders immediately
-    // from local HTML if the fetch doesn't resolve in time.
-    // this.showLanding('Loading...', 5); — removed, landing hidden by default
-    Carousel.init().catch(e => console.warn('Carousel init failed:', e.message));
+    Carousel.init().catch(() => {});
 
-    // No zone configured at all — show setup prompt
-    if (!zone) {
-      document.getElementById('setupPrompt').style.display = 'flex';
-      const lp = document.getElementById('landingPage');
-      if (lp) lp.style.display = 'none';
-      return;
-    }
+    // ── DASHBOARD RENDER INTENTIONALLY BLOCKED ────────────────────────
+    // Review Activity Log (📋 Log button) to see all diagnostic results.
+    // Once the root cause is identified and fixed, replace this block
+    // with the normal dashboard init flow.
+    this.showLanding('Diagnostic complete — check 📋 Log', 100);
+    const lp = document.getElementById('landingPage');
+    if (lp) lp.style.display = 'flex';
+    const dw = document.getElementById('dashWrap');
+    if (dw) dw.style.display = 'none';
+    const sp = document.getElementById('landingSpin');
+    if (sp) sp.style.display = 'none';
 
-    // ── Step 2: Try public summary download (no auth needed) ──
-    // Note: landing page is hidden by default — no showLanding needed here
-    const summaryIds = Cfg.get('summaryFileIds') || {};
-    let summaryLoaded = false;
-    AppLog.add('Summary', 'Checking summaryFileIds in config', summaryIds.recent ? 'OK' : 'WARN',
-      summaryIds.recent ? 'IDs found — attempting public download' : 'No summaryFileIds in config — summary never built or config not synced');
-
-    if (!summaryIds.recent) {
-      // Config has not synced from GitHub yet OR summary was never built.
-      // Show a specific status so the user doesn't see "Initialising..." frozen.
-      this.showLanding('⚠ Summary not configured — contact Admin', 100);
-    }
-
-    if (summaryIds.recent) {
-      AppLog.add('Summary', 'Fetching BP_SUMMARY_RECENT.json publicly', 'RUN', summaryIds.recent);
-      try {
-        const apiKey = Cfg.get('gApiKey') || '';
-        const cacheBust = Date.now();
-        const urls = apiKey
-          ? [`https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media&key=${apiKey}&t=${cacheBust}`]
-          : [];
-
-        let chunk = null;
-        for (const url of urls) {
-          try {
-            AppLog.add('Summary', 'Trying URL', 'RUN', url.replace(apiKey, 'AIza...'));
-            // Unauthenticated public request — API key as URL param only, no Authorization header
-            const fetchCtrl = new AbortController();
-            const fetchTimeout = setTimeout(() => fetchCtrl.abort(), 10000);
-            const r = await fetch(url, { signal: fetchCtrl.signal });
-            clearTimeout(fetchTimeout);
-            AppLog.add('Summary', 'HTTP response', r.ok ? 'OK' : 'WARN',
-              'Status: ' + r.status + (r.ok ? '' : apiKey ? ' — check API key / file sharing' : ' — no API key configured'));
-            if (!r.ok) continue;
-            // Race body read against 8s timeout — r.json() can hang on slow Drive streams
-            // even after a successful HTTP connection.
-            const summaryText = await Promise.race([
-              r.text(),
-              new Promise((_,rej) => setTimeout(() => rej(new Error('Summary body read timeout')), 8000))
-            ]);
-            chunk = JSON.parse(summaryText);
-            AppLog.add('Summary', 'JSON parsed successfully', 'OK',
-              'Dates: ' + Object.keys(chunk.dates||{}).length);
-            break;
-          } catch(e) {
-            AppLog.add('Summary', 'Fetch error', 'ERR', e.message);
-            continue;
-          }
-        }
-        if (chunk?.dates && Object.keys(chunk.dates).length > 0) {
-          await ChartStore.mergeChunk(zone, chunk);
-          summaryLoaded = true;
-          DataIntegrity._lastSummaryFetch = Date.now();
-          const _storeAfter = await ChartStore._getStore(zone);
-          const _storeAllDates = Object.keys(_storeAfter?.dates||{});
-          const _storeZoneDates = _storeAllDates.filter(d=>_storeAfter.dates[d]?.['__zone__']);
-          AppLog.add('Summary', 'Merged into IndexedDB', 'OK',
-            `newDates=${Object.keys(chunk.dates||{}).length} | ` +
-            `storeTotal=${_storeAllDates.length} | storeWithZone=${_storeZoneDates.length} | ` +
-            `range=${[..._storeZoneDates].sort()[0]||'none'} → ${[..._storeZoneDates].sort().slice(-1)[0]||'none'}`);
-          // this.showLanding('Preparing dashboard...', 60); — removed, landing hidden by default
-          // Download history in background
-          if (summaryIds.history) {
-            // Unauthenticated public request — no Authorization header
-            fetch(`https://www.googleapis.com/drive/v3/files/${summaryIds.history}?alt=media&key=${apiKey}&t=${Date.now()}`)
-              .then(r2 => r2.ok ? r2.json() : null)
-              .then(h => h ? ChartStore.mergeChunk(zone, h).then(() => DataIntegrity._refreshVisibleChart()) : null)
-              .catch(() => {});
-          }
-        }
-      } catch(e) { AppLog.add('Summary', 'Public fetch exception', 'ERR', e.message); }
-    }
-
-    // Also try authenticated fetch if public fetch failed and token available
-    if (!summaryLoaded) {
-      AppLog.add('Summary', 'Public fetch failed — trying authenticated fetch', 'WARN');
-      try {
-        const now = Date.now();
-        const token = (GDrive.token && GDrive.tokenExpiry > now) ? GDrive.token : null;
-        if (token && summaryIds.recent) {
-          const r = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${summaryIds.recent}?alt=media`,
-            { headers: { Authorization: `Bearer ${token}` } }
-          );
-          if (r.ok) {
-            const text = await r.text();
-            if (text.trim().startsWith('{')) {
-              const chunk = JSON.parse(text);
-              if (chunk?.dates && Object.keys(chunk.dates).length > 0) {
-                await ChartStore.mergeChunk(zone, chunk);
-                summaryLoaded = true;
-                this.showLanding('Preparing dashboard...', 60);
-              }
-            }
-          }
-        }
-      } catch(e) { console.warn('Auth summary fetch failed:', e.message); }
-    }
-
-    // ── Step 3: Try local IndexedDB cache (returning user) ────
-    if (!summaryLoaded) {
-      const store = await ChartStore._getStore(zone);
-      if (store?.dates && Object.keys(store.dates).length > 0) {
-        summaryLoaded = true;
-        AppLog.add('App', 'Using local IndexedDB cache', 'OK', Object.keys(store.dates).length + ' dates cached');
-        // this.showLanding('Loading from cache...', 60); — removed, landing hidden by default
-      } else {
-        AppLog.add('App', 'IndexedDB cache empty', 'WARN');
-      }
-    }
-
-    // ── Step 4: Try local bpFiles cache (legacy path) ─────────
-    if (!summaryLoaded) {
-      const dates = await FM.availDates('bp');
-      if (dates.length) {
-        summaryLoaded = true;
-        AppLog.add('App', 'Using local bpFiles cache', 'OK', dates.length + ' files');
-        // this.showLanding('Loading from local files...', 60); — removed, landing hidden by default
-      } else {
-        AppLog.add('App', 'No local bpFiles either', 'WARN');
-      }
-    }
-
-    // ── Step 5: No data available ─────────────────────────────
-    if (!summaryLoaded) {
-      AppLog.add('App', 'No data available — showing no-summary state', 'ERR',
-        'summaryIds.recent=' + (summaryIds.recent||'null'));
-      // Keep landing page steady — just replace the status bar with Admin+Log buttons
-      this.showNoSummary();
-      // Still try silent background sync in case admin token available
-      setTimeout(() => this._backgroundSync(zone), 1000);
-      return;
-    }
-
-    // ── Step 6: Load and show dashboard ───────────────────────
-    try {
-      const indexedDates = await DB.keys('fileIndex');
-      const bpDates = await FM.availDates('bp');
-      const latestDate = indexedDates.length
-        ? indexedDates.sort().reverse()[0]
-        : (bpDates.length ? bpDates[0] : '');
-
-      // Log everything Dashboard.init() will depend on
-      const _cfgDash = Cfg.d || {};
-      const _storeDash = await ChartStore._getStore(zone);
-      const _storeDashDates = Object.keys(_storeDash?.dates||{}).filter(d=>_storeDash.dates[d]?.['__zone__']);
-      AppLog.add('Dashboard', 'Pre-init state', 'RUN',
-        `latestDate=${latestDate||'null'} | ` +
-        `fileIndexDates=${indexedDates.length} | bpFileDates=${bpDates.length} | ` +
-        `chartStoreDates(withZone)=${_storeDashDates.length} | ` +
-        `columnOrder(enabled)=${(_cfgDash.columnOrder||[]).filter(c=>c.enabled).length} | ` +
-        `paramOrder=${(_cfgDash.paramOrder||[]).length} | ` +
-        `sheets(enabled)=${Object.keys(_cfgDash.sheets||{}).filter(k=>(_cfgDash.sheets[k]||{}).enabled).length} | ` +
-        `periods(enabled)=${Object.values(_cfgDash.periods||{}).filter(p=>p.enabled).length} | ` +
-        `activeZone=${_cfgDash.activeZone||'null'} | ` +
-        `fallback=${_cfgDash.fallback?'ON':'OFF'}`);
-
-      if (latestDate)
-        document.getElementById('navInfo').textContent = `Latest: ${latestDate}`;
-
-      await Dashboard.init();
-      AppLog.add('Dashboard', 'init() completed', 'OK',
-        `periodDates=${JSON.stringify(Dashboard.state?.periodDates||{})}`);
-    } catch(e) {
-      AppLog.add('Dashboard', 'init() threw error', 'ERR', e.message);
-      console.warn('Dashboard init error:', e);
-    }
-
-    // Dashboard is already visible — just ensure landing is hidden
-    this.hideLanding();
-    // Flush any clicks that fired before App was ready
-    window._appReady = true;
-    (window._q || []).forEach(fn => { try { fn(); } catch(e) {} });
-    window._q = [];
+    // Open Activity Log automatically so results are immediately visible
+    setTimeout(() => this.showActivityLog(), 800);
 
     // ── Step 7: Background sync (token-gated, silent) ─────────
     setTimeout(() => this._backgroundSync(zone), 1200);
