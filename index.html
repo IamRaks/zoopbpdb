@@ -8494,23 +8494,19 @@ const ChartUI = {
     })).filter(s => s.data.length >= 2);
   },
 
-  // Branch: read from chartData (summary), fall back to bpFiles if summary empty
+  // Branch: read from BranchChartStore (branch summary) — separate from zone/region ChartStore.
+  // BranchChartStore is populated by _processOneDate during rebuild and by
+  // BranchSummary.downloadFromDrive() on app startup for non-admin users.
   async _getBranchSeries(paramKey, zone, branchKey) {
-    const store = await ChartStore._getStore(zone);
-    if (store?.dates) {
-      const dates = Object.keys(store.dates).sort();
-      const series = dates.map(d => {
-        const v = store.dates[d]?.[branchKey]?.[paramKey] ?? null;
-        return v !== null && !isNaN(v) ? { date: d, value: v } : null;
-      }).filter(Boolean);
-      if (series.length >= 2) return series;
-    }
-    // No branch data in summary — return empty.
-    // Branch data is only available after a proper rebuild via _processOneDate.
-    // The bpFiles fallback loop was removed: it called DE.getAgg per date which
-    // is now a pure ChartStore read — if ChartStore has no branch data,
-    // iterating bpFiles won't help either.
-    return [];
+    if (!branchKey) return [];
+    const store = await BranchChartStore._getStore(zone);
+    if (!store?.dates) return [];
+    const dates = Object.keys(store.dates).sort();
+    const series = dates.map(d => {
+      const v = store.dates[d]?.[branchKey]?.[paramKey] ?? null;
+      return (v !== null && !isNaN(v)) ? { date: d, value: v } : null;
+    }).filter(Boolean);
+    return series.length >= 2 ? series : [];
   },
 
   // Aggregate series for weekly/monthly — shared bucket keys ensure multi-line alignment
@@ -8734,37 +8730,33 @@ const ChartUI = {
     return val.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
   },
 
-  // Get FY End value for a param from chartData (March 31 entry)
+  // Get FY End value for a param from BranchChartStore.
+  // Reads from the branch summary (BranchChartStore) — same store as _getBranchSeries.
+  // Searches for the closest date on or before FY End within a 5-day window,
+  // mirroring the fallback logic used by _getPeriodBase for zone/region.
+  // Works for both admin and non-admin users (no OAuth or bpFiles required).
   async _getBranchFyEndVal(zone, branchKey, paramKey) {
     try {
       const periodDates = Dashboard.state.periodDates || {};
       const fyeDate = periodDates['fye'] || null;
       if (!fyeDate) return null;
       const fyeTime = new Date(fyeDate).getTime();
-      const bpKeys = await DB.keys('bpFiles');
-      const idxKeys = await DB.keys('fileIndex');
-      const allCandidates = [...new Set([...bpKeys, ...idxKeys])].sort().reverse();
-      const nearby = allCandidates.filter(d => {
-        const t = new Date(d).getTime();
-        return t <= fyeTime && (fyeTime - t) <= 5 * 86400000;
-      }).sort().reverse();
+
+      const store = await BranchChartStore._getStore(zone);
+      if (!store?.dates) return null;
+
+      // Collect all stored dates on or before FY End within a 5-day window
+      const nearby = Object.keys(store.dates)
+        .filter(d => {
+          const t = new Date(d).getTime();
+          return t <= fyeTime && (fyeTime - t) <= 5 * 86400000;
+        })
+        .sort()
+        .reverse(); // most recent first
+
       for (const dateStr of nearby) {
-        let bpData = await DB.get('bpFiles', dateStr).catch(() => null);
-        if (!bpData) {
-          const entry = await DB.get('fileIndex', dateStr).catch(() => null);
-          if (!entry?.bpSheetId) continue;
-          bpData = await SheetsAPI.buildBPFromSheet(
-            entry.bpSheetId, dateStr, zone, DataIntegrity._sheetNameCache
-          ).catch(() => null);
-          if (!bpData) continue;
-        }
-        const wasInCache = !!(await DB.get('bpFiles', dateStr).catch(() => null));
-        if (!wasInCache) await DB.set('bpFiles', dateStr, bpData);
-        DE._cache = {};
-        const agg = await DE.getAgg(dateStr, { type: 'branch', zone, branchKey }, false).catch(() => null);
-        if (!wasInCache) await DB.del('bpFiles', dateStr).catch(() => {});
-        if (agg?.values?.[paramKey] !== undefined && agg.values[paramKey] !== null)
-          return { value: agg.values[paramKey], date: dateStr };
+        const v = store.dates[dateStr]?.[branchKey]?.[paramKey] ?? null;
+        if (v !== null && !isNaN(v)) return { value: v, date: dateStr };
       }
     } catch(e) { console.warn('_getBranchFyEndVal:', e.message); }
     return null;
