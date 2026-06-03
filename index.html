@@ -4493,16 +4493,73 @@ const DE = {
     const ck = this._cacheKey(dateStr, scope);
     if (this._cache[ck]) return this._cache[ck];
 
-    // ── Read from ChartStore (summary) — the single source of truth ──────────
-    // For all callers (dashboard, charts, branch table) the summary is the
-    // source. getAgg never fetches from Sheets API — that is _processOneDate's
-    // exclusive responsibility during a rebuild.
     const zone = Cfg.get('activeZone');
     if (!zone) return null;
 
-    const scopeKey = scope.type === 'zone'   ? '__zone__'      :
-                     scope.type === 'region' ? scope.region    :
-                     scope.type === 'branch' ? scope.branchKey : null;
+    // ── Branch scope — read from BranchChartStore, NOT ChartStore ────────────
+    // Branch aggregates are stored in a separate IndexedDB key
+    // (${zone}|branch|summary) written by _incrementalRebuild after tally gate.
+    // ChartStore (${zone}|zone) holds only zone and region scope keys.
+    if (scope.type === 'branch') {
+      const branchKey = scope.branchKey;
+      if (!branchKey) return null;
+
+      const branchStore = await BranchChartStore._getStore(zone);
+      const branchDates = Object.keys(branchStore.dates || {});
+
+      // Diagnostic: log store state when data is expected but missing
+      if (!branchDates.length) {
+        AppLog.add('DE', `getAgg: BranchChartStore empty — ${dateStr}`, 'WARN',
+          `zone=${zone} | branchKey=${branchKey} | ` +
+          `BranchChartStore has no dates — run Incremental Update to populate`);
+        return null;
+      }
+
+      const datesToTry = [dateStr];
+      if (fallback) {
+        branchDates.sort().filter(d => d < dateStr).reverse().slice(0, 10)
+          .forEach(d => datesToTry.push(d));
+      }
+
+      for (const td of datesToTry) {
+        const entry = branchStore.dates[td]?.[branchKey];
+        if (entry && Object.keys(entry).length > 0) {
+          const values = { ...entry };
+          // Compute derived params not already stored in branch summary
+          for (const dp of (Cfg.get('derivedParams') || [])) {
+            const dk = `__d__::${dp.name}`;
+            if (!(dk in values)) {
+              try {
+                let val = null; let valid = true;
+                for (const tok of dp.tokens) {
+                  const key = `${tok.sheet}::${tok.col}`;
+                  if (!(key in values)) { valid = false; break; }
+                  const tv = values[key] ?? 0;
+                  val = val === null ? tv : (tok.op === '+' ? val + tv : val - tv);
+                }
+                values[dk] = valid ? val : null;
+              } catch(e) {}
+            }
+          }
+          const result = { values, actual: td, isFB: td !== dateStr,
+                           rdMissing: false, bpMissing: false };
+          this._cache[ck] = result;
+          return result;
+        }
+      }
+
+      // Branch key not found in BranchChartStore for this date
+      AppLog.add('DE', `getAgg: branch not found — ${dateStr}`, 'WARN',
+        `zone=${zone} | branchKey=${branchKey} | ` +
+        `BranchChartStore has ${branchDates.length} dates | ` +
+        `branchKeys on ${dateStr}=${Object.keys(branchStore.dates[dateStr]||{}).length} | ` +
+        `fallback=${fallback} | datesToTry=${datesToTry.join(',')}`);
+      return null;
+    }
+
+    // ── Zone / Region scope — read from ChartStore ────────────────────────────
+    const scopeKey = scope.type === 'zone'   ? '__zone__' :
+                     scope.type === 'region' ? scope.region : null;
     if (!scopeKey) return null;
 
     const store = await ChartStore._getStore(zone);
@@ -5321,8 +5378,11 @@ const Dashboard = {
     if(!key){document.getElementById('branchTbl').innerHTML='<div class="state-card"><div class="ico">🏪</div><h3>Select a Branch</h3></div>';return;}
     const parts=key.split('-');const name=parts.slice(1).join('-').trim();
     document.getElementById('branchTitle').textContent=name+' — Branch';
-    // Auto-fetch missing period dates for this branch
-    await this._ensureBranchData(key);
+    // _ensureBranchData fetches bpFiles via Sheets API — only needed for admin.
+    // Non-admin users read from BranchChartStore (already populated from Drive).
+    if(GDrive.token){
+      await this._ensureBranchData(key);
+    }
     await this.renderBranch(key);
   },
 
