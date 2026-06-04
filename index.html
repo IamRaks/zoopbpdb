@@ -4659,13 +4659,15 @@ const DE = {
     return null;
   },
   async getBranches(zone,region){
-    // Try local bpFiles first, fall back to Sheets API for latest available date
+    // Try local bpFiles first (admin with local XLSX import)
     let fd = null;
     const localDates = await FM.availDates('bp');
     if (localDates.length) fd = await DB.get('bpFiles', localDates[0]);
 
-    // If not in local cache, try Drive via Sheets API
-    if (!fd) {
+    // If not in local cache, try Drive via Sheets API — ADMIN ONLY.
+    // Non-admin users have no OAuth token so this path always fails for them.
+    // Skipping it saves ~4s of failed API calls and avoids log noise.
+    if (!fd && GDrive.token) {
       const driveDates = await FileIndex.getDriveAvailDates();
       for (const dk of driveDates.slice(0, 3)) { // try latest 3 dates
         const entry = await DB.get('fileIndex', dk);
