@@ -717,17 +717,22 @@ function _ready(fn) {
       <div class="tab-panel" id="tab-activity" style="padding:12px 8px">
         <!-- Filter chips -->
         <div id="actFilterBar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-          <button class="act-chip active" data-filter="all" onclick="AppLog.setFilter('all',this)">All</button>
-          <button class="act-chip" data-filter="App" onclick="_ready(()=>{AppLog.setFilter('App',this)})">App</button>
-          <button class="act-chip" data-filter="OAuth" onclick="AppLog.setFilter('OAuth',this)">OAuth</button>
-          <button class="act-chip" data-filter="Drive API" onclick="AppLog.setFilter('Drive API',this)">Drive</button>
-          <button class="act-chip" data-filter="Sheets API" onclick="AppLog.setFilter('Sheets API',this)">Sheets</button>
-          <button class="act-chip" data-filter="GitHub" onclick="AppLog.setFilter('GitHub',this)">GitHub</button>
-          <button class="act-chip" data-filter="Summary" onclick="AppLog.setFilter('Summary',this)">Summary</button>
-          <button class="act-chip" data-filter="Schema" onclick="AppLog.setFilter('Schema',this)">Schema</button>
-          <button class="act-chip" data-filter="DataIntegrity" onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
-          <button class="act-chip" data-filter="Region" onclick="AppLog.setFilter('Region',this)">Region</button>
-          <button class="act-chip" data-filter="ERR" onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
+          <button class="act-chip active" data-filter="all"          onclick="AppLog.setFilter('all',this)">All</button>
+          <button class="act-chip" data-filter="App"                 onclick="AppLog.setFilter('App',this)">App</button>
+          <button class="act-chip" data-filter="OAuth"               onclick="AppLog.setFilter('OAuth',this)">OAuth</button>
+          <button class="act-chip" data-filter="Drive API"           onclick="AppLog.setFilter('Drive API',this)">Drive API</button>
+          <button class="act-chip" data-filter="Sheets"              onclick="AppLog.setFilter('Sheets',this)">Sheets</button>
+          <button class="act-chip" data-filter="GitHub"              onclick="AppLog.setFilter('GitHub',this)">GitHub</button>
+          <button class="act-chip" data-filter="Summary"             onclick="AppLog.setFilter('Summary',this)">Summary</button>
+          <button class="act-chip" data-filter="BranchSummary"      onclick="AppLog.setFilter('BranchSummary',this)">BranchSum</button>
+          <button class="act-chip" data-filter="BranchTally"        onclick="AppLog.setFilter('BranchTally',this)">BranchTally</button>
+          <button class="act-chip" data-filter="BranchStatus"       onclick="AppLog.setFilter('BranchStatus',this)">BranchStatus</button>
+          <button class="act-chip" data-filter="Schema"              onclick="AppLog.setFilter('Schema',this)">Schema</button>
+          <button class="act-chip" data-filter="DataIntegrity"       onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
+          <button class="act-chip" data-filter="Dashboard"           onclick="AppLog.setFilter('Dashboard',this)">Dashboard</button>
+          <button class="act-chip" data-filter="DE"                  onclick="AppLog.setFilter('DE',this)">DE</button>
+          <button class="act-chip" data-filter="Region"              onclick="AppLog.setFilter('Region',this)">Region</button>
+          <button class="act-chip" data-filter="ERR"                 onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
         </div>
         <!-- Log entries -->
         <div id="actLogWrap" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;max-height:calc(100vh - 220px);overflow-y:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.8">
@@ -735,7 +740,8 @@ function _ready(fn) {
         </div>
         <!-- Actions -->
         <div style="display:flex;gap:8px;margin-top:10px">
-          <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.copyFiltered()">📋 Copy</button>
+          <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.copyAll()">📋 Copy All</button>
+          <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.copyFiltered()">📋 Copy View</button>
           <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.exportLog()">⬇ Export</button>
           <button class="btn-s" style="flex:1;font-size:11px" onclick="AppLog.clear()">🗑 Clear</button>
         </div>
@@ -752,21 +758,27 @@ function _ready(fn) {
     <button onclick="document.getElementById('actOverlay').style.display='none'"
       style="background:none;border:none;color:var(--text);font-size:18px;cursor:pointer">←</button>
     <span style="font-weight:700;color:var(--text)">📋 Activity Log</span>
-    <button onclick="AppLog.copyFiltered()" style="margin-left:auto;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer">Copy</button>
+    <button onclick="AppLog.copyAll()" style="margin-left:auto;background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer">Copy All</button>
+    <button onclick="AppLog.copyFiltered()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer">Copy View</button>
     <button onclick="AppLog.clear()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer">Clear</button>
   </div>
   <div style="padding:8px 12px;background:var(--bg2);display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--border)">
-    <button class="act-chip active" data-filter="all" onclick="AppLog.setFilter('all',this)">All</button>
-    <button class="act-chip" data-filter="App" onclick="_ready(()=>{AppLog.setFilter('App',this)})">App</button>
-    <button class="act-chip" data-filter="OAuth" onclick="AppLog.setFilter('OAuth',this)">OAuth</button>
-    <button class="act-chip" data-filter="Drive API" onclick="AppLog.setFilter('Drive API',this)">Drive</button>
-    <button class="act-chip" data-filter="Sheets API" onclick="AppLog.setFilter('Sheets API',this)">Sheets</button>
-    <button class="act-chip" data-filter="GitHub" onclick="AppLog.setFilter('GitHub',this)">GitHub</button>
-    <button class="act-chip" data-filter="Summary" onclick="AppLog.setFilter('Summary',this)">Summary</button>
-    <button class="act-chip" data-filter="Schema" onclick="AppLog.setFilter('Schema',this)">Schema</button>
-    <button class="act-chip" data-filter="DataIntegrity" onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
-    <button class="act-chip" data-filter="Region" onclick="AppLog.setFilter('Region',this)">Region</button>
-    <button class="act-chip" data-filter="ERR" onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
+    <button class="act-chip active" data-filter="all"          onclick="AppLog.setFilter('all',this)">All</button>
+    <button class="act-chip" data-filter="App"                 onclick="AppLog.setFilter('App',this)">App</button>
+    <button class="act-chip" data-filter="OAuth"               onclick="AppLog.setFilter('OAuth',this)">OAuth</button>
+    <button class="act-chip" data-filter="Drive API"           onclick="AppLog.setFilter('Drive API',this)">Drive API</button>
+    <button class="act-chip" data-filter="Sheets"              onclick="AppLog.setFilter('Sheets',this)">Sheets</button>
+    <button class="act-chip" data-filter="GitHub"              onclick="AppLog.setFilter('GitHub',this)">GitHub</button>
+    <button class="act-chip" data-filter="Summary"             onclick="AppLog.setFilter('Summary',this)">Summary</button>
+    <button class="act-chip" data-filter="BranchSummary"      onclick="AppLog.setFilter('BranchSummary',this)">BranchSum</button>
+    <button class="act-chip" data-filter="BranchTally"        onclick="AppLog.setFilter('BranchTally',this)">BranchTally</button>
+    <button class="act-chip" data-filter="BranchStatus"       onclick="AppLog.setFilter('BranchStatus',this)">BranchStatus</button>
+    <button class="act-chip" data-filter="Schema"              onclick="AppLog.setFilter('Schema',this)">Schema</button>
+    <button class="act-chip" data-filter="DataIntegrity"       onclick="AppLog.setFilter('DataIntegrity',this)">Integrity</button>
+    <button class="act-chip" data-filter="Dashboard"           onclick="AppLog.setFilter('Dashboard',this)">Dashboard</button>
+    <button class="act-chip" data-filter="DE"                  onclick="AppLog.setFilter('DE',this)">DE</button>
+    <button class="act-chip" data-filter="Region"              onclick="AppLog.setFilter('Region',this)">Region</button>
+    <button class="act-chip" data-filter="ERR"                 onclick="AppLog.setFilter('ERR',this)" style="color:var(--red)">Errors</button>
   </div>
   <div id="actOverlayBody" style="flex:1;overflow-y:auto;padding:6px 12px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;line-height:1.9"></div>
   <div id="actOverlayCount" style="padding:6px 12px;font-size:10px;color:var(--text3);border-top:1px solid var(--border);text-align:center"></div>
@@ -1435,13 +1447,16 @@ const APILog = {
 
   async _flushToIDB() {
     if (!this._entries.length) return;
-    if (!this._session) return; // no admin session started yet
+    // Removed session gate — startup entries (session='') must also be persisted
+    // so they're available for Drive archive when Admin closes the panel.
     try {
-      const dateKey = `adminlog:${this._localDateStr()}`; // local device date, not UTC
+      const dateKey = `adminlog:${this._localDateStr()}`;
       const existing = await DB.get('config', dateKey) || { dates: {} };
       const sid = this._sessionId;
-      if (!existing.dates[sid]) existing.dates[sid] = { session: this._session, entries: [] };
-      // Only append entries belonging to this session
+      const sessionLabel = this._session || `startup:${this._localDateStr()}`;
+      if (!existing.dates[sid]) {
+        existing.dates[sid] = { session: sessionLabel, entries: [] };
+      }
       const stored = existing.dates[sid].entries;
       const sessionEntries = this._entries.filter(e => e.sessionId === sid);
       const newEntries = sessionEntries.slice(stored.length);
@@ -1454,76 +1469,237 @@ const APILog = {
     } catch(e) { /* non-fatal */ }
   },
 
-  // Called by Admin.close() — push today's log to Drive
+  // ── Build merged chronological log for Drive archive ─────────────────────
+  // Combines APILog entries (stream:'api') and AppLog entries (stream:'app')
+  // sorted by timestamp. Each entry has a 'stream' field for filtering.
+  // AppLog entries that are API call forwards are deduplicated — they appear
+  // once in the merged output under stream:'api' (the richer APILog version
+  // with durationMs and HTTP status is canonical for API calls).
+  _buildMergedLog(dateStr) {
+    // APILog entries for today's sessions
+    const apiEntries = this._entries
+      .filter(e => {
+        const d = e.ts instanceof Date ? e.ts : new Date(e.ts);
+        return this._localDateStr(d) === dateStr;
+      })
+      .map(e => ({
+        ts:         e.ts instanceof Date ? e.ts.toISOString() : e.ts,
+        stream:     'api',
+        entity:     e.entity,
+        action:     e.label,
+        status:     e.ok ? 'OK' : 'ERR',
+        detail:     e.detail || '',
+        durationMs: e.durationMs || null,
+        sessionId:  e.sessionId,
+        session:    e.session || ''
+      }));
+
+    // AppLog entries for today — exclude API call forwards to avoid duplication.
+    // API calls from AppLog are identified by matching entity + action + timestamp
+    // against the APILog entries already included above.
+    const apiKeys = new Set(apiEntries.map(e => `${e.entity}|${e.action}|${e.ts.substring(0,19)}`));
+    const appEntries = AppLog._entries
+      .filter(e => {
+        const d = e.ts instanceof Date ? e.ts : new Date(e.ts);
+        if (this._localDateStr(d) !== dateStr) return false;
+        // Keep if NOT a duplicate of an already-included API entry
+        const key = `${e.entity}|${e.action}|${(e.ts instanceof Date ? e.ts.toISOString() : e.ts).substring(0,19)}`;
+        return !apiKeys.has(key);
+      })
+      .map(e => ({
+        ts:         e.ts instanceof Date ? e.ts.toISOString() : e.ts,
+        stream:     'app',
+        entity:     e.entity,
+        action:     e.action,
+        status:     e.status,
+        detail:     e.detail || '',
+        durationMs: null,
+        sessionId:  null,
+        session:    ''
+      }));
+
+    // Merge and sort chronologically
+    const merged = [...apiEntries, ...appEntries].sort((a, b) =>
+      a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0
+    );
+
+    return {
+      _meta: {
+        schemaVersion:  2,
+        date:           dateStr,
+        zone:           Cfg.get('activeZone') || '',
+        pushedAt:       new Date().toISOString(),
+        totalEntries:   merged.length,
+        apiEntries:     apiEntries.length,
+        appEntries:     appEntries.length,
+        // stream field guide
+        streams: {
+          api: 'HTTP API calls (Drive, Sheets, GitHub, OAuth) — includes durationMs and HTTP status',
+          app: 'App logic events (schema, tally, branch, dashboard, config) — no durationMs'
+        }
+      },
+      entries: merged
+    };
+  },
+
+  // Called by Admin.close() and AdminLogUI.pushNow() — push merged log to Drive
   async pushToDrive() {
     try {
-      await this._flushToIDB(); // ensure latest entries are in IDB first
+      await this._flushToIDB(); // ensure APILog IDB is current
       const token = GDrive.token;
-      if (!token) return;
-      const dateStr = this._localDateStr(); // local device date, not UTC
-      const dateKey = `adminlog:${dateStr}`;
-      const logData = await DB.get('config', dateKey);
-      if (!logData) return;
+      if (!token) {
+        AppLog.add('AdminLog', 'Log archive skipped — no OAuth token', 'INF', '');
+        return;
+      }
+
+      const dateStr = this._localDateStr();
+      const mergedLog = this._buildMergedLog(dateStr);
+
+      if (!mergedLog.entries.length) {
+        AppLog.add('AdminLog', 'Log archive skipped — no entries for today', 'INF',
+          `date=${dateStr}`);
+        return;
+      }
+
+      AppLog.add('AdminLog', '══ Archive to Drive START ══', 'RUN',
+        `date=${dateStr} | totalEntries=${mergedLog.entries.length} | ` +
+        `apiEntries=${mergedLog._meta.apiEntries} | appEntries=${mergedLog._meta.appEntries} | ` +
+        `zone=${mergedLog._meta.zone}`);
 
       // Find or create ADMIN_LOGS folder
       const parentId = Cfg.get('gBpFolderId')
         ? await GDrive._getParentFolderId(Cfg.get('gBpFolderId')) : null;
-      if (!parentId) return;
+      if (!parentId) {
+        AppLog.add('AdminLog', 'Log archive failed — Drive parent folder not found', 'WARN',
+          `gBpFolderId=${Cfg.get('gBpFolderId') || 'NOT SET'}`);
+        return;
+      }
 
+      // Find or create ADMIN_LOGS subfolder
       let folderId = null;
-      const fq = encodeURIComponent(`'${parentId}' in parents and name='ADMIN_LOGS' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-      const fr = await fetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
-        { headers: { Authorization: `Bearer ${token}` } });
-      if (fr.ok) {
-        const fd = await fr.json();
-        folderId = fd.files?.[0]?.id;
+      const fq = encodeURIComponent(
+        `'${parentId}' in parents and name='ADMIN_LOGS' ` +
+        `and mimeType='application/vnd.google-apps.folder' and trashed=false`
+      );
+      const fr = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (fr.ok) folderId = (await fr.json()).files?.[0]?.id;
+
+      if (!folderId) {
+        const cr = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'ADMIN_LOGS',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [parentId]
+          })
+        });
+        if (cr.ok) {
+          folderId = (await cr.json()).id;
+          AppLog.add('AdminLog', 'Created ADMIN_LOGS folder on Drive', 'OK',
+            `folderId=${folderId?.substring(0,12)}`);
+        }
       }
       if (!folderId) {
-        const cr = await fetch('https://www.googleapis.com/drive/v3/files',
-          { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: 'ADMIN_LOGS', mimeType: 'application/vnd.google-apps.folder', parents: [parentId] }) });
-        if (cr.ok) folderId = (await cr.json()).id;
+        AppLog.add('AdminLog', 'Log archive failed — could not create ADMIN_LOGS folder', 'ERR', '');
+        return;
       }
-      if (!folderId) return;
 
       // Check for existing file for this date
-      const fname = `BP_ADMINLOG_${dateStr}.json`;
-      const eq = encodeURIComponent(`'${folderId}' in parents and name='${fname}' and trashed=false`);
-      const er = await fetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
-        { headers: { Authorization: `Bearer ${token}` } });
+      const fname = `BP_LOG_${dateStr}.json`;
+      const eq = encodeURIComponent(
+        `'${folderId}' in parents and name='${fname}' and trashed=false`
+      );
+      const er = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id,size)`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       let existingId = null;
-      if (er.ok) existingId = (await er.json()).files?.[0]?.id;
+      let existingSize = 0;
+      if (er.ok) {
+        const ef = (await er.json()).files?.[0];
+        existingId = ef?.id || null;
+        existingSize = parseInt(ef?.size || 0);
+      }
 
-      // Merge with existing if present
-      let finalData = logData;
+      // If existing file: download, merge entries (deduplicate by ts+entity+action), re-upload
+      let finalLog = mergedLog;
       if (existingId) {
-        const dr = await fetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
-          { headers: { Authorization: `Bearer ${token}` } });
-        if (dr.ok) {
-          const existing = await dr.json().catch(() => null);
-          if (existing?.dates) {
-            // Merge: local wins (has newer data)
-            finalData = { dates: { ...existing.dates, ...logData.dates } };
+        AppLog.add('AdminLog', 'Existing log found on Drive — merging', 'INF',
+          `file=${fname} | existingId=${existingId.substring(0,12)} | ` +
+          `existingSize=${(existingSize/1024).toFixed(1)}KB`);
+        try {
+          const dr = await fetch(
+            `https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          if (dr.ok) {
+            const existing = await dr.json().catch(() => null);
+            if (existing?.entries?.length) {
+              // Merge: deduplicate by ts+entity+action, sort chronologically
+              const existingKeys = new Set(
+                existing.entries.map(e => `${e.ts}|${e.entity}|${e.action}`)
+              );
+              const newOnly = mergedLog.entries.filter(
+                e => !existingKeys.has(`${e.ts}|${e.entity}|${e.action}`)
+              );
+              const allEntries = [...existing.entries, ...newOnly].sort(
+                (a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0
+              );
+              finalLog = {
+                _meta: {
+                  ...mergedLog._meta,
+                  totalEntries: allEntries.length,
+                  mergedAt:     new Date().toISOString(),
+                  mergedNew:    newOnly.length
+                },
+                entries: allEntries
+              };
+              AppLog.add('AdminLog', 'Log merged with existing', 'OK',
+                `existingEntries=${existing.entries.length} | ` +
+                `newEntries=${newOnly.length} | ` +
+                `totalAfterMerge=${allEntries.length}`);
+            }
           }
+        } catch(me) {
+          AppLog.add('AdminLog', 'Existing log download failed — overwriting', 'WARN', me.message);
         }
       }
 
-      // Upload
+      // Upload merged log
+      const content = JSON.stringify(finalLog, null, 2);
       const form = new FormData();
-      const meta = existingId ? '{}' : JSON.stringify({ name: fname, parents: [folderId] });
+      const meta = existingId
+        ? '{}'
+        : JSON.stringify({ name: fname, parents: [folderId] });
       form.append('metadata', new Blob([meta], { type: 'application/json' }));
-      form.append('file', new Blob([JSON.stringify(finalData)], { type: 'application/json' }));
-      const url = existingId
+      form.append('file',     new Blob([content], { type: 'application/json' }));
+      const uploadUrl = existingId
         ? `https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart`
         : `https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`;
-      await fetch(url, {
-        method: existingId ? 'PATCH' : 'POST',
+      const up = await fetch(uploadUrl, {
+        method:  existingId ? 'PATCH' : 'POST',
         headers: { Authorization: `Bearer ${token}` },
-        body: form
+        body:    form
       });
-      AppLog.add('AdminLog', `Session log saved to Drive — ${fname}`, 'OK');
+
+      if (up.ok) {
+        const uploaded = await up.json().catch(() => ({}));
+        AppLog.add('AdminLog', '══ Archive to Drive COMPLETE ══', 'OK',
+          `file=${fname} | entries=${finalLog.entries.length} | ` +
+          `size=${(content.length/1024).toFixed(1)}KB | ` +
+          `fileId=${uploaded.id?.substring(0,12) || existingId?.substring(0,12) || '?'} | ` +
+          `apiEntries=${finalLog._meta.apiEntries} | appEntries=${finalLog._meta.appEntries}`);
+      } else {
+        const err = await up.json().catch(() => ({}));
+        AppLog.add('AdminLog', '══ Archive to Drive FAILED ══', 'ERR',
+          `HTTP ${up.status} | ${err.message || ''} | file=${fname}`);
+      }
     } catch(e) {
-      AppLog.add('AdminLog', 'Drive push failed', 'WARN', e.message);
+      AppLog.add('AdminLog', 'Log archive exception', 'ERR', e.message);
     }
   },
 
@@ -1540,33 +1716,49 @@ const APILog = {
     const key = `adminlog:${dateStr}`;
     let data = await DB.get('config', key).catch(() => null);
     if (data) return data;
-    // Try Drive
+    // Try Drive — check both new BP_LOG_ and old BP_ADMINLOG_ filenames for backwards compat
     try {
       const token = GDrive.token;
       if (!token) return null;
       const parentId = Cfg.get('gBpFolderId')
         ? await GDrive._getParentFolderId(Cfg.get('gBpFolderId')) : null;
       if (!parentId) return null;
-      const fq = encodeURIComponent(`'${parentId}' in parents and name='ADMIN_LOGS' and mimeType='application/vnd.google-apps.folder' and trashed=false`);
-      const fr = await fetch(`https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
-        { headers: { Authorization: `Bearer ${token}` } });
+      const fq = encodeURIComponent(
+        `'${parentId}' in parents and name='ADMIN_LOGS' ` +
+        `and mimeType='application/vnd.google-apps.folder' and trashed=false`
+      );
+      const fr = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${fq}&fields=files(id)`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
       if (!fr.ok) return null;
-      const fd = await fr.json();
-      const folderId = fd.files?.[0]?.id;
+      const folderId = (await fr.json()).files?.[0]?.id;
       if (!folderId) return null;
-      const fname = `BP_ADMINLOG_${dateStr}.json`;
-      const eq = encodeURIComponent(`'${folderId}' in parents and name='${fname}' and trashed=false`);
-      const er = await fetch(`https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
-        { headers: { Authorization: `Bearer ${token}` } });
-      if (!er.ok) return null;
-      const existingId = (await er.json()).files?.[0]?.id;
-      if (!existingId) return null;
-      const dr = await fetch(`https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
-        { headers: { Authorization: `Bearer ${token}` } });
-      if (!dr.ok) return null;
-      data = await dr.json().catch(() => null);
-      if (data) await DB.set('config', key, data).catch(() => {});
-      return data;
+
+      // Try new filename first, then legacy
+      for (const fname of [`BP_LOG_${dateStr}.json`, `BP_ADMINLOG_${dateStr}.json`]) {
+        const eq = encodeURIComponent(
+          `'${folderId}' in parents and name='${fname}' and trashed=false`
+        );
+        const er = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${eq}&fields=files(id)`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!er.ok) continue;
+        const existingId = (await er.json()).files?.[0]?.id;
+        if (!existingId) continue;
+        const dr = await fetch(
+          `https://www.googleapis.com/drive/v3/files/${existingId}?alt=media`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!dr.ok) continue;
+        data = await dr.json().catch(() => null);
+        if (data) {
+          await DB.set('config', key, data).catch(() => {});
+          return data;
+        }
+      }
+      return null;
     } catch(e) { return null; }
   }
 };
@@ -5493,6 +5685,31 @@ const Dashboard = {
     const fb=Cfg.get('fallback');
     const params=this.getParamDefs(),colDefs=this.getColDefs();
     const latestDate=this.state.periodDates['latest'];
+
+    // ── Diagnostic: log BranchChartStore state before any getAgg call ────────
+    // This runs on every branch selection and shows exactly what's in the store
+    // vs what's being requested — makes key mismatches immediately visible.
+    try {
+      const bStore = await BranchChartStore._getStore(zone);
+      const bDates = Object.keys(bStore.dates || {}).sort();
+      const latestBDate = bDates.slice(-1)[0] || null;
+      const keysOnLatest = latestBDate
+        ? Object.keys(bStore.dates[latestBDate] || {}) : [];
+      const keyExists = latestDate
+        ? !!(bStore.dates[latestDate]?.[branchKey]) : false;
+      const sampleKeys = keysOnLatest.slice(0, 5);
+      AppLog.add('Dashboard', `renderBranch START — ${branchKey}`, 'RUN',
+        `zone=${zone} | latestDate=${latestDate} | ` +
+        `BranchChartStore.dates=${bDates.length} | ` +
+        `dateRange=${bDates[0]||'none'} → ${latestBDate||'none'} | ` +
+        `keyExistsOnLatest=${keyExists} | ` +
+        `branchKeysOnLatest=${keysOnLatest.length} | ` +
+        `sampleKeys=${sampleKeys.join(' | ')} | ` +
+        `requestedKey=${branchKey}`);
+    } catch(de) {
+      AppLog.add('Dashboard', `renderBranch diagnostic failed`, 'WARN', de.message);
+    }
+
     const latest=latestDate?await DE.getAgg(latestDate,{type:'branch',zone,branchKey,dateStr:latestDate},fb):null;
     const pmap={},fns=[];
     const needed=new Set(colDefs.filter(c=>c.periodKey!=='latest').map(c=>c.periodKey));
@@ -7093,8 +7310,18 @@ const DataIntegrity = {
         .filter(([, res]) => res.pass)
         .map(([rk]) => rk);
       const failingRegions = Object.entries(tallyResult.results)
-        .filter(([, res]) => !res.pass)
+        .filter(([, res]) => !res.pass && res.reason === 'tally_fail')
         .map(([rk]) => rk);
+      // UNDER_ZO and other derived regions have no region aggregate to tally against.
+      // They are always included in the write — skipping them would silently drop
+      // valid branch data (e.g. LCB branches, new branches not yet in RegionRegistry).
+      const noDataRegions = Object.entries(tallyResult.results)
+        .filter(([, res]) => !res.pass && res.reason !== 'tally_fail')
+        .map(([rk]) => rk);
+      const alwaysIncludeKeys = new Set(
+        Object.keys(r.branchRegionMap || {})
+          .filter(bk => noDataRegions.includes((r.branchRegionMap || {})[bk]))
+      );
 
       if (tallyResult.allPass) {
         // ── FULL PASS — write complete branch data ────────────────
@@ -7111,16 +7338,20 @@ const DataIntegrity = {
         AppLog.add('BranchTally', `Branch write OK — ${r.dateStr}`, 'OK',
           `branches=${Object.keys(r.branchScopeMap).length} | ` +
           `regions=${passingRegions.length} | ` +
-          `allPass=true`);
+          `noDataRegions=${noDataRegions.join(', ') || 'none'} | ` +
+          `alwaysIncluded=${alwaysIncludeKeys.size} | allPass=true`);
 
-      } else if (tallyResult.anyPass) {
-        // ── PARTIAL PASS — write only branches from passing regions ─
-        const passingBranchKeys = new Set(
-          passingRegions.flatMap(rk =>
+      } else if (tallyResult.anyPass || alwaysIncludeKeys.size > 0) {
+        // ── PARTIAL PASS — write branches from passing regions + UNDER_ZO/derived ─
+        const passingBranchKeys = new Set([
+          // Branches from regions that passed tally
+          ...passingRegions.flatMap(rk =>
             Object.keys(r.branchRegionMap || {})
               .filter(bk => (r.branchRegionMap || {})[bk] === rk)
-          )
-        );
+          ),
+          // Branches from derived/unknown regions (always included)
+          ...alwaysIncludeKeys
+        ]);
         const safeScopeMap = Object.fromEntries(
           Object.entries(r.branchScopeMap)
             .filter(([bk]) => passingBranchKeys.has(bk))
@@ -7130,7 +7361,9 @@ const DataIntegrity = {
           `writingBranches=${Object.keys(safeScopeMap).length} | ` +
           `skippedBranches=${Object.keys(r.branchScopeMap).length - Object.keys(safeScopeMap).length} | ` +
           `passingRegions=${passingRegions.join(', ')} | ` +
-          `failingRegions=${failingRegions.join(', ')}`);
+          `failingRegions=${failingRegions.join(', ')} | ` +
+          `derivedRegionsIncluded=${noDataRegions.join(', ')} | ` +
+          `alwaysIncludedBranches=${alwaysIncludeKeys.size}`);
 
         if (Object.keys(safeScopeMap).length > 0) {
           await BranchChartStore.writeDate(r.dateStr, zone, safeScopeMap);
@@ -11268,29 +11501,59 @@ const AdminLogUI = {
     this._selectedSession = null;
     this._renderCalendar();
 
-    // Load log data for this date
     const sessionsEl = document.getElementById('alSessions');
     sessionsEl.innerHTML = '<span style="font-size:11px;color:var(--text3)">Loading…</span>';
 
-    let data;
-    // Today's data comes from live APILog._entries + IDB
+    // Today: flush live entries to IDB first
     const today = APILog._localDateStr();
     if (dateStr === today && APILog._entries.length) {
       await APILog._flushToIDB();
     }
-    data = await APILog.getLogForDate(dateStr);
+    const data = await APILog.getLogForDate(dateStr);
 
-    if (!data?.dates || !Object.keys(data.dates).length) {
-      sessionsEl.innerHTML = '<span style="font-size:11px;color:var(--text3)">No sessions found for this date</span>';
+    // ── New format: flat entries[] array (schemaVersion 2) ──────────────
+    if (data?.entries?.length) {
+      const entries = data.entries;
+      const meta = data._meta || {};
+      const errCount = entries.filter(e => e.status === 'ERR').length;
+      const errBadge = errCount
+        ? `<span style="color:var(--red);margin-left:4px">· ${errCount} err</span>` : '';
+
+      sessionsEl.innerHTML = `
+        <div style="font-size:11px;color:var(--text3);padding:4px 0">
+          <span style="color:var(--text2);font-weight:600">${entries.length} entries</span> · 
+          <span style="color:var(--blue)">${meta.apiEntries||0} API</span> · 
+          <span style="color:var(--accent)">${meta.appEntries||0} App</span>
+          ${errBadge}
+          ${meta.zone ? `<span style="margin-left:6px">zone: ${meta.zone}</span>` : ''}
+        </div>`;
+
+      this._allEntries = entries.map(e => ({
+        ...e,
+        ts:          new Date(e.ts),
+        ok:          e.status === 'OK',
+        sessionTime: ''
+      }));
+      this._currentEntries = this._allEntries;
+      this._renderLog();
       return;
     }
 
-    // Render session pills
-    const sessions = Object.entries(data.dates).sort((a,b) => a[1].session.localeCompare(b[1].session));
+    // ── Legacy format: dates{} keyed by sessionId (schemaVersion 1) ────
+    if (!data?.dates || !Object.keys(data.dates).length) {
+      sessionsEl.innerHTML =
+        '<span style="font-size:11px;color:var(--text3)">No log data found for this date</span>';
+      return;
+    }
+
+    const sessions = Object.entries(data.dates).sort(
+      (a,b) => a[1].session.localeCompare(b[1].session)
+    );
     let pillsHTML = '';
     for (const [sid, s] of sessions) {
       const errCount = (s.entries||[]).filter(e => e.status === 'ERR' || !e.ok).length;
-      const errBadge = errCount ? `<span style="color:var(--red);margin-left:4px">· ${errCount} err</span>` : '';
+      const errBadge = errCount
+        ? `<span style="color:var(--red);margin-left:4px">· ${errCount} err</span>` : '';
       pillsHTML += `<div class="act-chip" style="cursor:pointer;padding:5px 10px;font-size:10px"
         onclick="AdminLogUI.selectSession('${sid}')"
         id="alpill_${sid}">
@@ -11299,17 +11562,15 @@ const AdminLogUI = {
     }
     sessionsEl.innerHTML = pillsHTML;
 
-    // Collect all entries for this date
     this._allEntries = [];
     for (const [sid, s] of sessions) {
       (s.entries||[]).forEach(e => this._allEntries.push({
-        ...e, ts: new Date(e.ts), sessionId: sid, sessionTime: s.session.substring(11,19)
+        ...e, ts: new Date(e.ts), sessionId: sid,
+        sessionTime: s.session.substring(11,19)
       }));
     }
     this._currentEntries = this._allEntries;
     this._renderLog();
-
-    // Auto-select latest session
     if (sessions.length) this.selectSession(sessions[sessions.length-1][0]);
   },
 
@@ -11411,7 +11672,7 @@ const AdminLogUI = {
     const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `BP_ADMINLOG_${this._selectedDate||'export'}.json`;
+    a.download = `BP_LOG_${this._selectedDate||'export'}.json`;
     a.click();
   },
 
@@ -11425,7 +11686,7 @@ const AdminLogUI = {
 
 const AppLog = {
   _entries: [],
-  _MAX: 300,
+  _MAX: 1000,         // increased from 300 — full rebuild generates 200+ entries
   _filter: 'all',
 
   _writeTimer: null,
@@ -11443,7 +11704,7 @@ const AppLog = {
     if (this._writeTimer) clearTimeout(this._writeTimer);
     this._writeTimer = setTimeout(() => {
       if (!DB.db) return; // DB not open yet — entries safe in _entries array
-      const snapshot = this._entries.slice(-500).map(e => ({
+      const snapshot = this._entries.slice(-this._MAX).map(e => ({
         ts: e.ts instanceof Date ? e.ts.toISOString() : e.ts,
         entity: e.entity, action: e.action, status: e.status, detail: e.detail || ''
       }));
@@ -11484,7 +11745,9 @@ const AppLog = {
   setFilter(filter, btn) {
     this._filter = filter;
     document.querySelectorAll('.act-chip').forEach(c => c.classList.remove('active'));
-    if (btn) btn.classList.add('active');
+    // Activate all matching chips across both tab panel and overlay
+    document.querySelectorAll(`.act-chip[data-filter="${filter}"]`)
+      .forEach(c => c.classList.add('active'));
     this._renderAll();
   },
 
@@ -11521,10 +11784,12 @@ const AppLog = {
         if (wrap) wrap.scrollTop = wrap.scrollHeight;
       }
     }
-    // Render into overlay if open
+    // Render into overlay if open — check both display style and flex (overlay uses flex)
     const overlay = document.getElementById('actOverlay');
     const overlayBody = document.getElementById('actOverlayBody');
-    if (overlay && overlay.style.display !== 'none' && overlayBody) {
+    const overlayVisible = overlay &&
+      (overlay.style.display === 'flex' || overlay.style.display === 'block');
+    if (overlayVisible && overlayBody) {
       const matches = this._filter === 'all'
         || (this._filter === 'ERR' && entry.status === 'ERR')
         || entry.entity === this._filter;
@@ -11564,15 +11829,44 @@ const AppLog = {
     if (el2) { el2.textContent = txt; el2.style.color = col; }
   },
 
-  copyFiltered() {
-    const text = this._filteredEntries().map(e => {
-      const ts = e.ts.toLocaleTimeString('en',{hour12:false});
+  // Format a set of entries as plain text for clipboard
+  _formatEntries(entries) {
+    return entries.map(e => {
+      const ts   = e.ts.toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
       const date = e.ts.toLocaleDateString('en',{day:'2-digit',month:'short'});
-      return `[${date} ${ts}] ${e.status} ${e.entity} › ${e.action}${e.detail?' — '+e.detail:''}`;
+      const header = `[${date} ${ts}] ${e.status.padEnd(4)} ${e.entity} › ${e.action}`;
+      if (!e.detail) return header;
+      // Indent each detail line so multi-line details are clearly subordinate
+      const indented = e.detail.split('\n').map((l,i) => i === 0
+        ? `\n    ${l}`
+        : `    ${l}`
+      ).join('\n');
+      return header + indented;
     }).join('\n');
+  },
+
+  // Copy currently filtered view to clipboard
+  copyFiltered() {
+    const label = this._filter === 'all'
+      ? 'All entries'
+      : `Filter: ${this._filter}`;
+    const entries = this._filteredEntries();
+    const header = `BP Dashboard Activity Log — ${label} — ${new Date().toLocaleString()}\n` +
+                   `${entries.length} entries\n${'─'.repeat(60)}\n`;
+    const text = header + this._formatEntries(entries);
     navigator.clipboard.writeText(text)
-      .then(()=>alert('Copied!'))
-      .catch(()=>prompt('Copy log:',text));
+      .then(() => alert(`Copied ${entries.length} entries (${label})`))
+      .catch(() => prompt('Copy log:', text));
+  },
+
+  // Copy ALL entries regardless of current filter
+  copyAll() {
+    const header = `BP Dashboard Activity Log — ALL entries — ${new Date().toLocaleString()}\n` +
+                   `${this._entries.length} entries\n${'─'.repeat(60)}\n`;
+    const text = header + this._formatEntries(this._entries);
+    navigator.clipboard.writeText(text)
+      .then(() => alert(`Copied all ${this._entries.length} entries`))
+      .catch(() => prompt('Copy log:', text));
   },
 
   clear() {
@@ -11588,6 +11882,8 @@ const AppLog = {
     const data = {
       exportedAt: new Date().toISOString(),
       filter: this._filter,
+      totalEntries: this._entries.length,
+      shownEntries: entries.length,
       entries: entries.map(e => ({
         ts: e.ts.toISOString(),
         entity: e.entity,
@@ -11681,6 +11977,11 @@ const App = {
     // DIAGNOSTIC MODE — Dashboard render is intentionally blocked.
     // All checks complete first. Results visible in Activity Log (📋).
     // ══════════════════════════════════════════════════════════════════
+
+    // Start APILog session immediately — ensures all startup API calls
+    // (CHECK 1–9) are captured in the archive, not just post-Admin-open calls.
+    // Admin.open() will start a new session for admin-specific activity.
+    APILog.startNewSession();
 
     // ── CHECK 1: IndexedDB ────────────────────────────────────────────
     AppLog.add('App', '══ CHECK 1: IndexedDB ══', 'RUN');
