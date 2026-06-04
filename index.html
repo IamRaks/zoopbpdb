@@ -4674,7 +4674,70 @@ const DE = {
         if (fd && Object.keys(fd.sheets).length) break;
       }
     }
-    if (!fd) return [];
+
+    // ── Fallback 3: BranchChartStore scope keys (non-admin, no OAuth needed) ──
+    // When bpFiles is empty and Sheets API is unavailable (no OAuth token),
+    // read branch keys directly from BranchChartStore which was populated
+    // by the admin's last rebuild and pushed to Drive as BRANCH_SUMMARY_RECENT.json.
+    // This is the primary path for all non-admin users.
+    if (!fd) {
+      const allKeys = await BranchChartStore.getScopeKeys(zone);
+      if (!allKeys.length) {
+        AppLog.add('DE', 'getBranches: BranchChartStore empty — no branch list available', 'WARN',
+          `zone=${zone} | bpFiles=empty | Sheets API=no token | ` +
+          `BranchChartStore has no scope keys — admin must run Incremental Update first`);
+        return [];
+      }
+
+      AppLog.add('DE', 'getBranches: using BranchChartStore scope keys', 'INF',
+        `zone=${zone} | totalKeys=${allKeys.length} | ` +
+        `region filter=${region || 'none (all regions)'} | ` +
+        `sampleKeys=${allKeys.slice(0, 3).join(', ')}…`);
+
+      // Parse branch keys — format is "NNNNN-BranchName" or "NNNNN-WORD-WORD"
+      let branches = allKeys.map(k => {
+        const parts = k.split('-');
+        const solid = parts[0] || '';
+        const name  = parts.slice(1).join('-').trim() || k;
+        return { key: k, solid, name, display: `${name} - ${solid}`, region: null };
+      });
+
+      // Apply region filter if requested.
+      // Region is determined by scanning the most recent BranchChartStore date
+      // for any RO-prefixed scope key that matches — or by branchRegionMap if available.
+      // Since BranchChartStore doesn't store region membership directly, we derive it
+      // from the branch key prefix against RegionRegistry when setup is complete.
+      if (region && region !== '') {
+        const setup = RegionRegistry.isSetupComplete(zone);
+        if (setup) {
+          // Use RegionRegistry to resolve RO for each branch key
+          // branchKey format is NNNNN-Name — we match on the RO code prefix
+          // against the registry's bpRegions list
+          const zs = Cfg.get('zoneSetup') || {};
+          const bpRegions = (zs[zone]?.bpRegions || []);
+          // Build a map: roCode prefix → scopeKey
+          const prefixToScope = {};
+          for (const r of bpRegions) {
+            const roCode = (r.roRaw || '').split('-')[0]?.trim();
+            if (roCode) prefixToScope[roCode] = RegionRegistry.norm(r.roRaw || '');
+          }
+          branches = branches.filter(b => {
+            // Branch key prefix (first 5 digits) identifies the RO region
+            const branchRoCode = b.solid ? b.solid.substring(0, 5) : '';
+            const mapped = prefixToScope[branchRoCode];
+            return mapped === region || b.region === region;
+          });
+        }
+        // If setup not complete, skip region filter — show all branches
+      }
+
+      AppLog.add('DE', 'getBranches: BranchChartStore result', 'INF',
+        `zone=${zone} | returned=${branches.length} | region=${region || 'all'}`);
+
+      return branches.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    // ── bpFiles or Sheets API path (admin) ────────────────────────────────────
     const fs = Object.values(fd.sheets)[0]; if (!fs) return [];
     let rows = fs.rows.filter(r => r['ZO'] === zone);
     if (region) { const rk=region==='__ZO__'?'-':region; rows=rows.filter(r=>r['RO']===rk); }
@@ -6092,6 +6155,137 @@ const BranchSummary = {
       }
     }
     return changed;
+  },
+
+  // ── Download BRANCH_SUMMARY_RECENT.json from Drive into BranchChartStore ──
+  // Called on app startup (App.init CHECK 6) for all users — no OAuth needed.
+  // Uses the same public Drive v3 API + API key pattern as the zone summary.
+  // Only downloads if the Drive file is newer than local IndexedDB state.
+  async downloadFromDrive(zone) {
+    zone = zone || Cfg.get('activeZone');
+    if (!zone) return false;
+
+    const ids    = Cfg.get('summaryFileIds') || {};
+    const apiKey = Cfg.get('gApiKey')        || '';
+    const recentId = ids.branchRecent;
+
+    if (!recentId) {
+      AppLog.add('BranchSummary', 'download skipped — branchRecent ID not set', 'INF',
+        `zone=${zone} | Admin must run Force Rebuild to generate BRANCH_SUMMARY_RECENT.json`);
+      return false;
+    }
+    if (!apiKey) {
+      AppLog.add('BranchSummary', 'download skipped — gApiKey not configured', 'WARN',
+        `zone=${zone} | branchRecent=${recentId.substring(0,12)}`);
+      return false;
+    }
+
+    // Check local freshness — skip download if already up to date.
+    // Compare against summaryLastUpdated (zone summary push timestamp) as a proxy:
+    // branch and zone summaries are always pushed together, so if zone is current
+    // the branch is too. Use branchSummaryDownloadedAt for the local side.
+    const downloadedAt   = await DB.get('config', 'branchSummaryDownloadedAt') || 0;
+    const summaryUpdated = await DB.get('config', 'summaryLastUpdated')        || 0;
+
+    const localStore  = await BranchChartStore._getStore(zone);
+    const localDates  = Object.keys(localStore.dates || {}).length;
+    const isStale     = summaryUpdated > downloadedAt || localDates === 0;
+
+    AppLog.add('BranchSummary', 'downloadFromDrive START', 'RUN',
+      `zone=${zone} | branchRecent=${recentId.substring(0,12)} | ` +
+      `localDates=${localDates} | ` +
+      `downloadedAt=${downloadedAt ? new Date(downloadedAt).toISOString() : 'never'} | ` +
+      `summaryUpdated=${summaryUpdated ? new Date(summaryUpdated).toISOString() : 'never'} | ` +
+      `isStale=${isStale}`);
+
+    if (!isStale) {
+      AppLog.add('BranchSummary', 'downloadFromDrive skipped — already current', 'OK',
+        `zone=${zone} | localDates=${localDates} | ` +
+        `downloadedAt=${new Date(downloadedAt).toISOString()}`);
+      return true; // local data is current
+    }
+
+    // Fetch from Drive using same public URL pattern as zone summary
+    const url = `https://www.googleapis.com/drive/v3/files/${recentId}` +
+                `?alt=media&key=${apiKey}&t=${Date.now()}`;
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 15000); // 15s — branch file is larger
+      const resp = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(timeout);
+
+      AppLog.add('BranchSummary', 'BRANCH_SUMMARY_RECENT.json fetch response',
+        resp.ok ? 'OK' : 'ERR',
+        `HTTP ${resp.status} | ` +
+        `fileId=${recentId.substring(0,12)} | ` +
+        (!resp.ok && resp.status === 403 ? 'File not public — admin must re-push summary' :
+         !resp.ok && resp.status === 404 ? 'File not found — stale ID in config?' : ''));
+
+      if (!resp.ok) return false;
+
+      const text = await Promise.race([
+        resp.text(),
+        new Promise((_,rej) => setTimeout(()=>rej(new Error('body read timed out at 15s')), 15000))
+      ]);
+
+      AppLog.add('BranchSummary', 'Response body received', 'OK',
+        `size=${( text.length/1024).toFixed(1)}KB | zone=${zone}`);
+
+      const chunk = JSON.parse(text);
+      if (!chunk?.dates || !Object.keys(chunk.dates).length) {
+        AppLog.add('BranchSummary', 'downloadFromDrive — empty dates in response', 'WARN',
+          `zone=${zone} | chunk._meta=${JSON.stringify(chunk._meta||{})} | ` +
+          `dates=${Object.keys(chunk.dates||{}).length}`);
+        return false;
+      }
+
+      // Validate chunk zone matches active zone
+      if (chunk._meta?.zone && chunk._meta.zone !== zone) {
+        AppLog.add('BranchSummary', 'downloadFromDrive — zone mismatch', 'ERR',
+          `expected=${zone} | got=${chunk._meta.zone} | Skipping merge`);
+        return false;
+      }
+
+      // Merge into BranchChartStore (remote wins per date — same as ChartStore.mergeChunk)
+      const store = await BranchChartStore._getStore(zone);
+      const beforeCount = Object.keys(store.dates).length;
+      let added = 0;
+      for (const [dateStr, branchData] of Object.entries(chunk.dates)) {
+        if (!branchData || !Object.keys(branchData).length) continue;
+        if (!store.dates[dateStr] ||
+            Object.keys(store.dates[dateStr]).length === 0) {
+          store.dates[dateStr] = branchData;
+          added++;
+        } else {
+          // Existing date — remote wins (admin rebuild is authoritative)
+          store.dates[dateStr] = branchData;
+          added++;
+        }
+      }
+      await BranchChartStore._setStore(zone, store);
+      await DB.set('config', 'branchSummaryDownloadedAt', Date.now());
+
+      const afterCount = Object.keys(store.dates).length;
+      const sampleDate = Object.keys(chunk.dates).sort().slice(-1)[0] || 'none';
+      const sampleBranchCount = Object.keys(chunk.dates[sampleDate] || {}).length;
+
+      AppLog.add('BranchSummary', 'downloadFromDrive COMPLETE', 'OK',
+        `zone=${zone} | ` +
+        `datesReceived=${Object.keys(chunk.dates).length} | ` +
+        `datesAdded=${added} | ` +
+        `storeBeforeCount=${beforeCount} | storeAfterCount=${afterCount} | ` +
+        `dateRange=${Object.keys(chunk.dates).sort()[0]} → ${sampleDate} | ` +
+        `branchesOnLatest=${sampleBranchCount} | ` +
+        `size=${(text.length/1024).toFixed(1)}KB`);
+
+      return true;
+
+    } catch(e) {
+      AppLog.add('BranchSummary', 'downloadFromDrive ERROR', 'ERR',
+        `zone=${zone} | ${e.message} | ` +
+        (e.name === 'AbortError' ? 'Connection timed out after 15s' : ''));
+      return false;
+    }
   },
 
   // Push branch summary chunks to Drive (requires token).
@@ -11696,8 +11890,40 @@ const App = {
       }
     }
 
-    // ── CHECK 6: IndexedDB ChartStore state ──────────────────────────
-    AppLog.add('App', '══ CHECK 6: ChartStore (IndexedDB) State ══', 'RUN');
+    // ── CHECK 6: Branch summary download from Drive ───────────────────
+    // Downloads BRANCH_SUMMARY_RECENT.json into BranchChartStore for all
+    // users — no OAuth required. This populates the branch dropdown and
+    // enables branch table + chart rendering without any admin login.
+    // Skipped if branchRecent ID is not yet set (no rebuild done yet).
+    AppLog.add('App', '══ CHECK 6: Branch Summary Fetch ══', 'RUN');
+    const branchIds = Cfg.get('summaryFileIds') || {};
+    if (!branchIds.branchRecent) {
+      AppLog.add('App', 'Branch summary skipped — branchRecent ID not set', 'INF',
+        `Admin must run Force Rebuild to generate BRANCH_SUMMARY_RECENT.json and push to Drive`);
+    } else {
+      try {
+        const branchLoaded = await BranchSummary.downloadFromDrive(zone);
+        if (branchLoaded) {
+          const bStore = await BranchChartStore._getStore(zone);
+          const bDates = Object.keys(bStore.dates || {});
+          const latestBDate = bDates.sort().slice(-1)[0] || 'none';
+          const branchCount = Object.keys(bStore.dates[latestBDate] || {}).length;
+          AppLog.add('App', 'Branch summary loaded', 'OK',
+            `zone=${zone} | dates=${bDates.length} | ` +
+            `dateRange=${bDates.sort()[0]||'none'} → ${latestBDate} | ` +
+            `branchesOnLatest=${branchCount}`);
+        } else {
+          AppLog.add('App', 'Branch summary not loaded — branch tab will use cached data', 'WARN',
+            `zone=${zone} | branchRecent=${branchIds.branchRecent?.substring(0,12)} | ` +
+            `Check BranchSummary log entries above for details`);
+        }
+      } catch(be) {
+        AppLog.add('App', 'Branch summary fetch error — non-fatal', 'WARN', be.message);
+      }
+    }
+
+    // ── CHECK 7: IndexedDB ChartStore state ──────────────────────────
+    AppLog.add('App', '══ CHECK 7: ChartStore (IndexedDB) State ══', 'RUN');
     const store = await ChartStore._getStore(zone).catch(() => null);
     const storeAll = Object.keys(store?.dates||{});
     const storeZone = storeAll.filter(d => store?.dates[d]?.['__zone__']);
@@ -11715,7 +11941,7 @@ const App = {
       `latestDate        = ${[...storeZone].sort().slice(-1)[0] || 'NONE — dashboard cannot render'}`);
 
     // ── CHECK 7: Dashboard dependencies ──────────────────────────────
-    AppLog.add('App', '══ CHECK 7: Dashboard Dependencies ══', 'RUN');
+    AppLog.add('App', '══ CHECK 8: Dashboard Dependencies ══', 'RUN');
     const cfg3 = Cfg.d || {};
     const colDefs = (cfg3.columnOrder||[]).filter(c=>c.enabled);
     const paramDefs = cfg3.paramOrder||[];
@@ -11742,10 +11968,10 @@ const App = {
       ' | latestDate=' + (latestInStore||'NONE') +
       (issues.length ? ' | ISSUES: ' + issues.join(' | ') : ' | ALL OK'));
 
-    // ── CHECK 8: Branch status — pull pending retry list from GitHub ────
+    // ── CHECK 9: Branch status — pull pending retry list from GitHub ────
     // Admin-only: pull branch-status.json so pending failed dates are known
     // before the next incremental run. Non-admin devices skip this silently.
-    AppLog.add('App', '══ CHECK 8: Branch Status (GitHub) ══', 'RUN');
+    AppLog.add('App', '══ CHECK 9: Branch Status (GitHub) ══', 'RUN');
     try {
       const branchFailed = await DB.get('config', 'branchTallyFailed') || {};
       const localPending = Object.keys(branchFailed).filter(d =>
@@ -11777,7 +12003,7 @@ const App = {
       AppLog.add('App', 'BranchStatus pull failed — non-fatal', 'WARN', be.message);
     }
 
-    // ── CHECK 9: Summary — complete ──────────────────────────────────
+    // ── CHECK 10: Summary — complete ──────────────────────────────────
     AppLog.add('App', '══ DIAGNOSTIC COMPLETE ══',
       issues.length === 0 && summaryLoaded ? 'OK' : 'ERR',
       'dbOK=' + dbOK + ' | githubOK=' + githubOK +
